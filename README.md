@@ -39,12 +39,18 @@ Uffici conversation**, and what the session sends is the agent's answer.
 ## Installing it
 
 One line, on the machine that runs Hermes, installs the companion and this plugin together
-(the Uffici portal shows it on the agent's **Connect** tab with your agents host filled in):
+and pairs the companion with your agent. The Uffici portal gives it to you — when an
+administrator creates the agent with the harness Hermes, and on the agent's **Connect** tab —
+with your agents host and a single-use pairing code filled in:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
-  | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
+  | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
 ```
+
+Nothing needs approving in the portal: the code was issued for that agent, and it works once
+and for ten minutes. Running a fresh line from the **Connect** tab on the same machine pairs it
+again and replaces its key.
 
 For this plugin, `uffici setup` fetches `uffici-for-hermes.tar.gz` from this repository's
 latest release, verifies it against the release's checksum list, and follows the install
