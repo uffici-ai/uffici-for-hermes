@@ -1,151 +1,147 @@
 # Uffici for Hermes
 
-The Uffici plugin for the [Hermes](https://github.com/NousResearch/hermes-agent)
-agent harness. It is a **format translator** between Hermes's native seams and
-the [Uffici companion](https://github.com/uffici-ai/uffici-companion) — no
-network code, no credential, no retry logic, no schema of its own.
+The Uffici plugin for the [Hermes](https://github.com/NousResearch/hermes-agent) agent
+harness. It connects a Hermes you run to your agent in [Uffici](https://uffici.ai), through
+the [Uffici companion](https://github.com/uffici-ai/uffici-companion) on the same machine.
+The plugin is a translator between Hermes's own hooks and the companion: it holds no
+credential and opens no network connection.
 
-Uffici is an office for AI agents: conversations, boards, tables, files,
-channels, memory, integrations, schedules, approvals, and the trail that makes
-all of it answerable. Uffici runs no agent harness of its own — a customer
-brings the harness they already use, and the platform is the place that harness
-works **in**.
+Uffici is an office for AI agents: conversations, boards, tables, files, channels,
+integrations, schedules, approvals, and the trail that makes all of it answerable. Uffici runs
+no agent harness of its own. You bring the harness you already use, and Uffici is the place it
+works in.
 
 ## What it does
 
-Hermes is a gateway platform in its own sense, like Slack: **one Hermes session
-per conversation**, and the adapter's send is the answer. Wave 1 does four
-translations and nothing else:
+Hermes treats Uffici as a gateway platform, the way it treats Slack: **one Hermes session per
+Uffici conversation**, and what the session sends is the agent's answer.
 
-1. **A brief becomes one inbound message.** The companion delivers a brief for
-   each turn the platform wakes this agent for; the adapter renders its entries,
-   names the author who caused the turn, and hands Hermes one message.
-2. **Each send becomes a post**, on the request open for that conversation.
-3. **The turn's end becomes a `done`** — `answered` when the agent replied,
-   `empty` when it had nothing to add, `error` with a class and never a
-   provider's message, `cancelled` when it was stopped.
-4. **A cancel becomes Hermes's own `/stop`**, so a withdrawn turn stops the way
-   the harness already knows how to stop.
-
-🔴 **The turn's end is Hermes's idle, not its completion hook.** Hermes fires
-`on_processing_complete` when its message handler returns, and on some paths that
-is before the agent has run at all — a message that arrives while the gateway is
-restoring its sessions at boot is queued and reported complete at once, and one
-for a busy session is merged into the running turn. So the adapter does not say
-`ready` until the startup restore is over, and a close waits both for the replies
-to stop and for Hermes to show the session idle: no processing guard, no pending
-message, no running turn.
-
-🔴 **An approval request is denied at once, with a reason.** Wave 1 has no way to
-ask a person to approve a command (that is stage 3), so when Hermes escalates one —
-its smart-approval guardian does on every call against a reasoning model — the
-adapter answers `deny` with a sentence the agent relays, and the agent answers the
-person inside the deadline. Without that hook Hermes would post its plain-text
-`/approve` prompt through `send`, as the agent's message, and then wait on nobody
-until the request expired.
-
-The test that the plugin stayed simple: if the companion is down, the plugin
-does nothing and the agent shows offline. A Hermes release can only break the
-hook wiring, never the wire.
-
-Wave 2 adds the MCP pointer, wave 3 the memory seam, wave 4 the summary entry
-kind. None of them is here. What is here is the channel they will use: the
-**call tunnel** (`adapter.calls`, #2028) makes one platform operation per `call`
-frame through the companion, matched to its `result` by `callId`, concurrent
-and bounded by its own deadline. Nothing calls it yet.
-
-## Installing it
-
-The plugin is loaded from Hermes's own plugin directory and enabled by name:
-
-```sh
-# Into the Hermes home this gateway runs from.
-cp -r uffici-for-hermes "$HERMES_HOME/plugins/"
-hermes plugins enable uffici
-```
-
-It is **pinned to Hermes 0.21.5** (commit `f97608f1`, release `v2026.9.24`): the
-adapter is written against that version's `BasePlatformAdapter`, `MessageEvent`
-and platform registry, and the dev container in `dev/` runs exactly it.
-
-Then point it at a companion, with a socket or a URL:
-
-| Variable | What it is |
-|---|---|
-| `UFFICI_WIRE_SOCKET` | The companion's Unix socket. The normal shape. |
-| `UFFICI_COMPANION_URL` | Its address instead, default `http://127.0.0.1:7411`. |
-| `UFFICI_COMPANION_ALLOW_REMOTE` | `1` to allow a companion that is not on loopback — the pod shape, where both containers share a network namespace. |
-| `UFFICI_WIRE_TOKEN_FILE` | The companion's token file, normally `$UFFICI_HOME/wire-token`. |
-| `UFFICI_WIRE_TOKEN` | The token itself, for a container with no shared filesystem. |
-| `UFFICI_CONTEXT_SHARE` | The fraction of this harness's context window Uffici may fill. Default **0.25**, less a 10 % margin for tokenizer drift. |
-| `UFFICI_CONTEXT_WINDOW_TOKENS` | This model's context window, when the harness's own configuration cannot be read. |
-
-🔴 **The plugin never ships a context window.** It holds a share and a margin,
-and asks the harness for the window — because the number it declares is what the
-platform sizes its reads to, and a shipped default would be a statement about a
-model the plugin has never seen. When the window cannot be learned it refuses to
-connect and says which variable to set.
-
-## How it is authorized
-
-**Authorization is upstream, and delegated rather than absent.** The companion
-authenticates the local wire with a token before any frame is delivered, and
-Uffici decided which agent is a participant in which conversation before it
-rang. Hermes's default-deny allowlist is therefore asking a question that was
-already answered, so the adapter declares `authorization_is_upstream` — the same
-declaration, for the same reason, that Hermes's bundled a2a adapter makes.
-
-🔴 It registers **no allowlist and no allow-everyone switch**. There is no
-`UFFICI_ALLOW_ALL_USERS`, and adding one would be a way to widen access to
-conversations the platform never granted. A test fails if either name appears
-anywhere in the package.
-
-## What it is not
-
-- Not a network client. Every byte to the platform goes through the companion.
-- Not a credential holder. The agent key never reaches this process.
-- Not a store. Nothing durable lives in the harness — memory, context, summaries
-  and large tool results are the platform's.
+1. When Uffici asks your agent to answer, the companion hands the plugin a brief for that
+   turn. The plugin renders it as one inbound message to Hermes, naming the person whose
+   message caused the turn.
+2. Each message Hermes sends becomes a post in that conversation.
+3. When Hermes is done, the plugin closes the turn: answered, or empty when the agent had
+   nothing to add, or with an error class when it could not answer. Uffici tells the person
+   in every case; a turn never ends in silence.
+4. When Uffici withdraws a turn, the plugin stops Hermes with its own `/stop`.
 
 ## Requirements
 
-Python 3.13, matching the sealed virtual environment Hermes ships. The
-dependencies are confined to what Hermes itself ships (`websockets`, `httpx`):
-anything else is unavailable at runtime however well it resolves at build time.
+- A Hermes you run as a **gateway** (`hermes gateway`), since the plugin is a gateway
+  platform. The plugin is written against **Hermes 0.21.5** (commit `f97608f1`, release
+  `v2026.9.24`): its adapter uses that version's platform interfaces, and a different version
+  may load but is untested.
+- Python 3.13, which is what Hermes's own environment provides. The plugin runs inside that
+  environment and depends only on libraries Hermes already ships (`websockets`, `httpx`).
+- The [Uffici companion](https://github.com/uffici-ai/uffici-companion), installed and paired
+  on the same machine or in the same pod.
 
-🔴 Hermes itself is **not** a dependency, not even a development one. The plugin
-runs inside Hermes's environment, which already provides it; and PyPI's newest
-`hermes-agent` is two minor versions behind the one this targets, so taking it
-would compile the tests against the wrong API while looking like verification.
-The tests run against a stand-in transcribed from the pinned source, and
-[#2014](https://github.com/uffici-ai/velcra-platform/issues/2014) is the run
-against a real Hermes.
+## Installing it
 
-## Check
+Hermes loads a plugin from one directory that is both an importable package and the home of
+its manifest, so copy the **package** directory, not this repository's root, into the plugin
+directory of the Hermes home your gateway runs from, and enable it by the name in its
+manifest:
 
-One entry, in this project's own toolchain. It is what CI runs and what the
-platform's `pnpm check:uffici` delegates to:
+```sh
+cp -r src/uffici_for_hermes "$HERMES_HOME/plugins/uffici-for-hermes"
+hermes plugins enable uffici-for-hermes
+```
+
+Then switch the Uffici platform on in Hermes's configuration (`$HERMES_HOME/config.yaml`),
+and tell it to interrupt a running turn when a new message arrives, which is how a withdrawn
+turn stops:
+
+```yaml
+gateway:
+  platforms:
+    uffici:
+      enabled: true
+  busy_input_mode: interrupt
+```
+
+Finally, tell the plugin where the companion is. On a laptop or server, the companion's Unix
+socket and its token file, both under the companion's `$UFFICI_HOME` (`~/.uffici` by default):
+
+```sh
+export UFFICI_WIRE_SOCKET="$HOME/.uffici/wire.sock"
+export UFFICI_WIRE_TOKEN_FILE="$HOME/.uffici/wire-token"
+```
+
+In a pod, its loopback address and the token from a Secret instead. Every variable:
+
+| Variable | What it is |
+| --- | --- |
+| `UFFICI_WIRE_SOCKET` | The companion's Unix socket, `$UFFICI_HOME/wire.sock`. The normal shape on one machine. |
+| `UFFICI_COMPANION_URL` | The companion's loopback address instead, `http://127.0.0.1:7411` by default — the pod shape. Without `UFFICI_WIRE_SOCKET` this default is used, so set the socket on a machine. |
+| `UFFICI_COMPANION_ALLOW_REMOTE` | `1` to allow a companion that is not on loopback: a pod where both containers share a network namespace. |
+| `UFFICI_WIRE_TOKEN_FILE` | The companion's token file, `$UFFICI_HOME/wire-token`. One of this and `UFFICI_WIRE_TOKEN` is required; the plugin refuses to connect without a token. |
+| `UFFICI_WIRE_TOKEN` | The token itself, for a container that shares no filesystem with the companion. Source it from a Secret. |
+| `UFFICI_CONTEXT_SHARE` | The fraction of this Hermes's context window Uffici may fill with conversation content. Default **0.25**, less a 10 % margin for tokenizer drift. |
+| `UFFICI_CONTEXT_WINDOW_TOKENS` | This model's context window, when the plugin cannot read it from Hermes's own configuration. |
+
+The plugin never ships a context window of its own. It asks Hermes for the model's window and
+declares a share of it; when the window cannot be learned, it refuses to connect and names the
+variable to set, because the number it declares is what Uffici sizes its reads to.
+
+Restart the Hermes gateway. In the Uffici portal the agent shows **Online**; send it a message
+in a conversation it participates in and the answer appears there.
+
+## How it is authorized
+
+Authorization happens in Uffici, before the plugin is involved. The companion authenticates the
+local wire with a token before any frame is delivered, and Uffici decided which agent
+participates in which conversation before it rang. Hermes's own allowlist would be asking a
+question that was already answered, so the plugin declares its authorization as upstream, the
+same declaration Hermes's bundled a2a adapter makes.
+
+The plugin registers **no allowlist and no allow-everyone switch**, and has no setting that
+could widen access to a conversation Uffici did not grant. A test in this repository fails if
+such a setting appears.
+
+## What to expect
+
+- **The agent goes offline when the companion is down.** The plugin does nothing on its own;
+  a Hermes release can only affect the hook wiring, never the wire to Uffici.
+- **Command approvals are declined, with a reason the agent relays.** When Hermes asks a
+  person to approve a command (its guardian does this on every call against a reasoning
+  model), the plugin answers no at once and the agent tells the person, inside the turn's
+  deadline. Approvals through Uffici come with a later release.
+- **The turn ends when Hermes is idle**, not when its message handler returns: a message that
+  arrives while Hermes is restoring sessions at start-up, or for a session that is already
+  busy, is handled in order and the turn closes when the answer is complete.
+- **Hermes's own tools and memory stay local in this release.** What the agent reads from a
+  Uffici conversation and posts to it goes through Uffici and is recorded there; what Hermes
+  does with its local tools and its local memory is not routed through Uffici and not
+  recorded by it. Tools and memory through Uffici come with a later release; the channel they
+  will use is in place, and nothing uses it yet.
+
+## What it is not
+
+- Not a network client. Every byte to Uffici goes through the companion.
+- Not a credential holder. The agent key never reaches this process.
+- Not a store of Uffici's data. Conversations, context and summaries are Uffici's, so changing
+  harness loses none of them.
+
+## Build and test from source
 
 ```sh
 uv run --frozen ruff check . && uv run --frozen pytest
 ```
 
-Requires [uv](https://docs.astral.sh/uv/). The Markdown link guard runs inside
-`pytest` — this project depends on no other toolchain, by design.
+This needs [uv](https://docs.astral.sh/uv/). Hermes itself is deliberately not a dependency,
+not even for tests: the plugin runs inside Hermes's environment, and the tests run against a
+stand-in transcribed from the pinned Hermes source. The `dev/` directory holds a container
+recipe for the pinned Hermes and a deterministic model stand-in, which is how the plugin is
+exercised end to end without an account or a model provider.
 
-## Working here
+## Getting help and contributing
 
-🔴 **This repository receives releases; it is not where the work happens.**
-The plugin is developed in the Uffici platform repository (private) in its
-`uffici/` tree, under the platform's own rules, skills and review workflows.
-A release dispatched there exports this project's subtree here as a single squashed
-commit against an allow-list and tags it — no history leaves, nothing is force-pushed.
-
-So there are deliberately no rules, skills, agents, review workflows or plan
-file here, and a pull request opened here has no reader. File the issue and the
-change in the platform repository, where the work is tracked.
+This repository receives releases from Uffici.AI and does not take pull requests; the source is
+here so you can read, build and verify it. To report a problem or ask for a change, contact
+Uffici.AI through your account or [uffici.ai](https://uffici.ai).
 
 ## License
 
-Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). Uffici is a trademark of
-Uffici.AI; the license grants no rights to the name.
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Uffici is a trademark of Uffici.AI;
+the license grants no rights to the name.
