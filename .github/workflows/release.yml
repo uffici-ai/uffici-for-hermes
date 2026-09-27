@@ -67,6 +67,11 @@ jobs:
       - name: Sign
         run: cosign sign-blob --yes --bundle dist/uffici-for-hermes.tar.gz.sigstore.json dist/uffici-for-hermes.tar.gz
       - name: Attest
+        # 🔴 Only once the repository is public: GitHub persists a build
+        # attestation for public repositories (or a plan that includes them),
+        # and a private-phase release must still complete — the checksum list
+        # and the signature bundle need no such feature (#2196).
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/uffici-for-hermes.tar.gz
