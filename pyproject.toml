@@ -1,0 +1,67 @@
+# The Uffici plugin for Hermes.
+#
+# Developed in uffici-ai/velcra-platform under `uffici/`, mirrored to
+# uffici-ai/uffici-for-hermes on a release tag (epic #1994, decisions 34-36).
+#
+# 🔴 Dependencies are confined to what Hermes itself ships. The plugin runs
+# inside Hermes's sealed virtual environment, so anything else is unavailable at
+# runtime however well it resolves here; and the plugin is a format translator
+# with no network code of its own, which is what keeps that list short.
+[project]
+name = "uffici-for-hermes"
+version = "0.0.0"
+description = "The Uffici platform adapter for the Hermes agent harness"
+readme = "README.md"
+requires-python = "==3.13.*"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Uffici.AI" }]
+dependencies = [
+    # Hermes's own WebSocket and HTTP libraries, and nothing more.
+    "websockets>=13,<16",
+    "httpx>=0.27,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
+    "ruff>=0.16,<0.17",
+]
+
+# 🔴 The group Hermes's plugin loader scans.
+[project.entry-points."hermes_agent.plugins"]
+uffici = "uffici_for_hermes"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/uffici_for_hermes"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+# 🔴 The coverage floor is IN the test command, not beside it. A floor that
+# lives in a CI step is a floor a laptop never meets, and `check:uffici` runs
+# this exact line.
+addopts = "--cov=uffici_for_hermes --cov-report=term-missing --cov-fail-under=90"
+
+[tool.coverage.run]
+branch = true
+source = ["src/uffici_for_hermes"]
+
+[tool.coverage.report]
+exclude_also = [
+    # The real WebSocket dial and the task spawn need a live socket and a
+    # running gateway; #2014 is where they are exercised.
+    "pragma: no cover",
+]

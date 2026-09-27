@@ -1,0 +1,49 @@
+# The plugin's own CI — a thin caller of this project's `check` entry.
+#
+# 🔴 It does NOT run in the platform repository: the workflow travels with the
+# subtree so the mirrored repository proves the project builds standalone, which
+# is the whole claim the `uffici/` fence makes. On the platform side the same
+# check runs through `pnpm check:uffici --only uffici-for-hermes`, from the
+# `uffici-for-hermes` job in that repository's `pr.yml`.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned by SHA: this project's toolchain is what the check is a
+      # statement about, so a floating tag would move it without a diff of ours.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - name: Check
+        run: uv run --frozen ruff check . && uv run --frozen pytest
+
+# 🔴 WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO, and when that changes.
+#
+# #2014 asks for the end-to-end conversation job to live here too, "mirror
+# ready", identical to the platform's. It cannot, and the reason is the fence
+# this project exists behind: that job needs a COMPANION to talk to, and the
+# companion is a different project in a different repository. Nothing here may
+# reference it (`.claude/rules/uffici.md`), and the mirrored repository has no
+# copy of it to reference.
+#
+# The platform repository runs that job for both projects, because there both
+# are present — which is exactly the asymmetry the fence describes: the
+# platform may reference a child; a child never references the platform.
+#
+# This becomes possible when the companion is DISTRIBUTED (wave 5): a released
+# binary or image this workflow can fetch by version. Until then the honest
+# position is that the conversation is verified in the platform repository and
+# stated here, rather than a job that looks mirrored and is not.

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/post.schema.json",
+  "title": "Post",
+  "description": "plugin → companion. One outbound message. Every post means 'more coming'; done closes the request.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "requestId",
+    "text"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "post"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 131072
+    }
+  }
+}

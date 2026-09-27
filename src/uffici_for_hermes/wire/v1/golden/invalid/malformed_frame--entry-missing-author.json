@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "opener",
+  "requestId": "req_01J8ZQ7X4K2M9P0Q",
+  "entries": [
+    {
+      "id": "e1",
+      "cursor": "c1",
+      "at": "2026-09-17T14:01:00Z",
+      "kind": "message",
+      "text": "no author"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+# The Uffici platform, as Hermes's plugin loader reads it.
+#
+# 🔴 `requires_env` is deliberately EMPTY of credentials. This plugin holds no
+# vendor key and no account: the companion beside it holds every connection and
+# every secret, and the only thing the plugin presents is a local wire token
+# that the companion itself minted on this machine.
+name: uffici-for-hermes
+label: Uffici
+kind: platform
+version: 0.1.0
+description: >
+  The Uffici platform adapter. Connects this harness to an Uffici companion
+  running on the same machine over a local WebSocket: the companion delivers a
+  brief for each turn the platform wakes this agent for, and the adapter answers
+  with the harness's own replies.
+
+  Authorization is upstream. The companion authenticates the local wire with a
+  token before any frame is delivered, and Uffici decided which agent is a
+  participant before it rang — so this platform carries no allowlist of its own
+  and offers no allow-everyone switch.
+author: Uffici.AI
+optional_env:
+  - name: UFFICI_WIRE_SOCKET
+    description: "Unix socket the companion serves (default: $UFFICI_HOME/wire.sock)"
+    prompt: "Companion socket path (or empty for TCP)"
+    password: false
+  - name: UFFICI_COMPANION_URL
+    description: "Companion address when not using a socket (default: http://127.0.0.1:7411)"
+    prompt: "Companion URL"
+    password: false
+  - name: UFFICI_COMPANION_ALLOW_REMOTE
+    description: "Set to 1 to allow a companion that is not on loopback (the pod shape)"
+    prompt: "Allow a non-loopback companion? (1 or empty)"
+    password: false
+  - name: UFFICI_WIRE_TOKEN_FILE
+    description: "File holding the local wire token (normally $UFFICI_HOME/wire-token)"
+    prompt: "Wire token file"
+    password: false
+  - name: UFFICI_WIRE_TOKEN
+    description: "The local wire token itself, for a container with no shared filesystem"
+    prompt: "Wire token"
+    password: true
+  - name: UFFICI_CONTEXT_SHARE
+    description: "Fraction of this harness's context window Uffici may fill (default: 0.25)"
+    prompt: "Context share"
+    password: false
+  - name: UFFICI_CONTEXT_WINDOW_TOKENS
+    description: "This model's context window, when the harness's own configuration cannot be read"
+    prompt: "Context window in tokens (or empty)"
+    password: false

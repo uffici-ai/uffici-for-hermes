@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/result.schema.json",
+  "title": "Result",
+  "description": "companion → plugin. The one answer to a call, carrying the call's callId and exactly one of payload (success) or error. A result whose callId matches no call in flight is discarded by the plugin: it is late, or it was never asked for.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "callId"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "result"
+    },
+    "callId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The callId of the call this answers, verbatim."
+    },
+    "payload": {
+      "type": "object",
+      "description": "The operation's output on success, opaque to the wire. Bounded with the frame at 262144 encoded bytes. Never logged, on either side."
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "class",
+        "instruction"
+      ],
+      "properties": {
+        "class": {
+          "type": "string",
+          "enum": [
+            "unknown_op",
+            "not_permitted",
+            "timed_out",
+            "upstream_failed",
+            "malformed_payload"
+          ],
+          "description": "The wire's transport-level class, a closed vocabulary. unknown_op: the companion serves no such op. not_permitted: the op exists and this call may not make it. timed_out: deadlineMs passed first. upstream_failed: the platform refused or failed, or the connection it needed was lost; its own typed error is in upstream. malformed_payload: the frame broke its bound or the op's input did not parse."
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "The sentence the agent relays to the person (decision 32). Platform vocabulary, never tenant content."
+        },
+        "upstream": {
+          "type": "object",
+          "description": "The control plane's own typed error, opaque to the wire, when there is one."
+        }
+      },
+      "description": "Present exactly when the call failed."
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "payload"
+      ]
+    },
+    {
+      "required": [
+        "error"
+      ]
+    }
+  ],
+  "not": {
+    "required": [
+      "payload",
+      "error"
+    ]
+  }
+}

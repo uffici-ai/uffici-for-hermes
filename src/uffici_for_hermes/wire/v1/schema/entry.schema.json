@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/entry.schema.json",
+  "title": "Entry",
+  "description": "One transcript entry as the platform read it. The companion NEVER composes an entry: it maps the platform's bounded read one to one, so nothing here is the companion's opinion.",
+  "type": "object",
+  "required": [
+    "id",
+    "cursor",
+    "at",
+    "author",
+    "kind",
+    "text"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "The platform's entry id."
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Opaque position, ordered by the platform. A brief's delta is (sinceCursor, throughCursor]."
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339, UTC."
+    },
+    "author": {
+      "$ref": "#/$defs/author"
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "KNOWN values: message, tool_line, tombstone. 🔴 Deliberately NOT an enum. Forward compatibility is a requirement of this wire: a reader that meets a kind it does not know renders the entry as a labelled line rather than failing, and wave 4's summary kind must arrive with no version bump. Closing this enum would make that arrival a breaking change.",
+      "examples": [
+        "message",
+        "tool_line",
+        "tombstone"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "maxLength": 131072,
+      "description": "Already flattened and bounded by the platform."
+    },
+    "attachments": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/attachment"
+      }
+    }
+  },
+  "$defs": {
+    "author": {
+      "type": "object",
+      "required": [
+        "type",
+        "id",
+        "label",
+        "self"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "member",
+            "agent",
+            "correspondent",
+            "system"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Display label as the platform resolved it."
+        },
+        "handle": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "An agent's @slug, so the model can address it by name."
+        },
+        "self": {
+          "type": "boolean",
+          "description": "True when this entry is the answering agent's own. A delta OMITS these; an opener INCLUDES them."
+        }
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "ref"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "ref": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    }
+  }
+}

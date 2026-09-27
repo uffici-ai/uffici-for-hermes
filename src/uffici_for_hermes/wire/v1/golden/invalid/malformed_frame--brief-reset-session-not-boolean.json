@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "type": "brief",
+  "requestId": "req_01J8ZQ7X4K2M9P0Q",
+  "conversationId": "conv_1",
+  "reason": "mentioned",
+  "cause": {
+    "entryId": "e1",
+    "authorId": "m1"
+  },
+  "deadline": "2026-09-17T14:10:00Z",
+  "sinceCursor": null,
+  "throughCursor": "c0002",
+  "resetSession": "yes",
+  "delta": []
+}

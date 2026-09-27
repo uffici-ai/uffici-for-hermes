@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "type": "brief",
+  "conversationId": "conv_1",
+  "reason": "mentioned",
+  "cause": {
+    "entryId": "e1",
+    "authorId": "m1"
+  },
+  "deadline": "2026-09-17T14:10:00Z",
+  "sinceCursor": null,
+  "throughCursor": "c0002",
+  "resetSession": false,
+  "delta": []
+}

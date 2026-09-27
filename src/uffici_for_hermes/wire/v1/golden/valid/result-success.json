@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "result",
+  "callId": "b2e8d4f1-6a3c-4f9e-8d2b-5c7a1e9f3b64",
+  "payload": {
+    "facts": [
+      {
+        "id": "fact_01J8ZR2A",
+        "text": "The Lisbon invoice is escalated to finance."
+      }
+    ]
+  }
+}

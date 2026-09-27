@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/brief.schema.json",
+  "title": "Brief",
+  "description": "companion → plugin. One request, one conversation. Exactly one request is open per conversation at a time.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "requestId",
+    "conversationId",
+    "reason",
+    "cause",
+    "deadline",
+    "sinceCursor",
+    "throughCursor",
+    "resetSession",
+    "delta"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "brief"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "conversationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The platform's ring-reason vocabulary, carried through verbatim."
+    },
+    "cause": {
+      "type": "object",
+      "required": [
+        "entryId",
+        "authorId"
+      ],
+      "properties": {
+        "entryId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "authorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "description": "The recorded human cause this request answers. The plugin uses the cause's author as the inbound sender."
+    },
+    "deadline": {
+      "type": "string",
+      "format": "date-time",
+      "description": "After which the companion expires the request; the plugin need not enforce it."
+    },
+    "sinceCursor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200,
+      "description": "Exclusive lower bound; null for a conversation's first brief."
+    },
+    "throughCursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Inclusive upper bound, fixed when the request opened. A redelivered brief recomputes the same range."
+    },
+    "resetSession": {
+      "type": "boolean",
+      "description": "The platform forces a fresh harness session; the plugin must not resume."
+    },
+    "delta": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": {
+        "$ref": "entry.schema.json"
+      },
+      "description": "(sinceCursor, throughCursor], with the answering agent's OWN entries omitted — those arrive in the opener."
+    }
+  }
+}

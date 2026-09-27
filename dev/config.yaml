@@ -1,0 +1,75 @@
+# Hermes's configuration for the local loop, against a REAL provider.
+# `dev/config.mock.yaml` is its twin for the deterministic model — see the note
+# there about why the mock needs a named provider rather than an env var.
+#
+# 🔴 Everything here is about making a dev run REPRODUCIBLE and quiet, never
+# about making the agent behave well: what a real customer's Hermes does with
+# compaction, memory and tools is their configuration, and wave 1 deliberately
+# observes the harness's own defaults rather than tuning them (epic #1994
+# decision 45 — our summarization is wave 4's question, not this one's).
+# 🔴 The PLUGIN's name here (`uffici-for-hermes`, from `plugin.yaml`), and the
+# PLATFORM's name below (`uffici`, what `register_platform` is called with).
+# They are different names for different things, and writing the platform's name
+# here leaves the plugin discovered-but-not-enabled — which `hermes plugins
+# list` shows and the gateway log does not mention at all.
+# 🔴 The CURRENT schema version, not the oldest migratable one.
+#
+# Without this key Hermes says the config "predates version 12 (~2 years old)"
+# and cannot auto-migrate it. Writing 12 — which that warning names — is worse:
+# Hermes then migrates 12 -> 44 and FAILS, because this file is mounted
+# read-only, so the boot carries `ERROR: Read-only file system`. Writing the
+# version the file is actually written against means no migration is attempted
+# at all. Found by reading a real container's first ten log lines.
+_config_version: 44
+
+plugins:
+  enabled:
+    - uffici-for-hermes
+
+gateway:
+  platforms:
+    # One platform, and only one. A dev gateway that also woke on Telegram
+    # would make "did the turn come from Uffici?" a question.
+    uffici:
+      enabled: true
+
+  # Interrupt rather than queue: a superseding ring should stop the turn in
+  # flight, which is what the platform's own supersede expects to happen.
+  busy_input_mode: interrupt
+
+# 🔴 `approvals` is left at Hermes's own default, deliberately (#2164). When Hermes asks a
+# person to approve a command, the plugin answers DENY at once with a reason the agent
+# relays: this platform has no approval channel until stage 3, and waiting on nobody
+# holds the turn until it expires. `approvals.mode: off` here would make the dev rig run
+# tools unattended that a customer's harness would refuse, and hide exactly the path
+# the real-provider gate has to exercise.
+
+# Tool progress off and streaming off: the wire carries whole posts, and a
+# stream of partials would be N posts where the platform expects one message.
+# 🔴 The cheapest model that can actually hold a conversation, because the only
+# thing a real-provider run adds over the mock is "a real model satisfies the
+# fixture's matchers" — and that does not need an expensive one. Owner call,
+# 2026-09-18.
+#
+# `~deepseek/deepseek-v4-flash-latest` is an auto-updating alias (the `~` is
+# OpenRouter's marker for one), which matches this repository's standing rule
+# that a dependency tracks the latest stable rather than a version chosen once
+# and left. At $0.055/$0.165 per million tokens a whole seven-ring run costs a
+# fraction of a cent.
+model:
+  default: "~deepseek/deepseek-v4-flash-latest"
+  provider: "openrouter"
+
+tool_progress: off
+streaming:
+  enabled: false
+
+# 🔴 Off, all three. A dev container that phones home turns every local run into
+# an outbound request nobody reviewed, and an update check can change the
+# harness under a pinned image.
+telemetry:
+  enabled: false
+analytics:
+  enabled: false
+update_check:
+  enabled: false

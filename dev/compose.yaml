@@ -1,0 +1,82 @@
+# The local loop's own compose file.
+#
+# 🔴 It references NOTHING outside this child (`.claude/rules/uffici.md`): the
+# whole directory is exported to its own repository on a release tag, and a path
+# resolving above it would break there while passing here. The platform's
+# `infra/docker-compose.yml` INCLUDES this file — the platform may reference a
+# child; a child never references the platform.
+#
+# Both services are behind profiles in the including file, so `pnpm infra:up`
+# never starts them.
+
+name: uffici-hermes-dev
+
+services:
+  hermes:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 🔴 No published port. The gateway talks OUT to a companion; nothing needs
+    # to reach in, and a published port on a dev box is a listening service the
+    # operator did not ask for.
+    environment:
+      # host.docker.internal reaches a companion running on the laptop.
+      UFFICI_COMPANION_URL: "${UFFICI_COMPANION_URL:-http://host.docker.internal:7411}"
+      # 🔴 Required for that address: it is not loopback from the container's
+      # point of view, and the plugin refuses a non-loopback companion without
+      # this — the wire's only authentication is a local token.
+      UFFICI_COMPANION_ALLOW_REMOTE: "1"
+      # 🔴 NOT `:?`. Compose interpolates the whole file before it looks at
+      # profiles, so a required-variable marker here fails `pnpm infra:up` for
+      # everyone — including the developer who has never heard of this profile.
+      # The refusal belongs where it is actionable: the plugin names both token
+      # variables, and the companion mints its own.
+      UFFICI_WIRE_TOKEN: "${UFFICI_WIRE_TOKEN:-}"
+      UFFICI_CONTEXT_WINDOW_TOKENS: "${UFFICI_CONTEXT_WINDOW_TOKENS:-32000}"
+      # The provider. `hermes:up --mock` points this at the model mock instead.
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # 🔴 Never the root override. The image refuses a root gateway on purpose.
+      HERMES_UID: "${HERMES_UID:-1000}"
+      HERMES_GID: "${HERMES_GID:-1000}"
+    extra_hosts:
+      # Docker Desktop provides this implicitly; Linux engines do not.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - hermes-data:/opt/data
+      # 🔴 Read-only, and mounted rather than baked: an edit to the plugin is
+      # live on the next restart, and the container has no business writing to
+      # the working tree.
+      #
+      # 🔴 The PACKAGE directory, not the project root. Hermes's loader wants
+      # one directory that is both an importable package and the manifest's home
+      # — its bundled plugins look exactly like that, which is why `plugin.yaml`
+      # lives inside the package here. Mounting the project root instead gets
+      # the plugin DISCOVERED (the manifest is found) and then refused with
+      # "No __init__.py", which reads like a packaging error and is not one.
+      - ../src/uffici_for_hermes:/opt/data/plugins/uffici-for-hermes:ro
+      # 🔴 WHICH config is the mock switch. `HERMES_MODEL_BASE_URL` does not
+      # exist in Hermes, so pointing at the deterministic model is a named
+      # provider in the config file, not an environment variable.
+      - ./${HERMES_CONFIG_FILE:-config.yaml}:/opt/data/config.yaml:ro
+    healthcheck:
+      # The gateway is healthy once its process is answering; there is no HTTP
+      # surface to probe, by design.
+      test: ["CMD-SHELL", "pgrep -f 'gateway' > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    restart: "no"
+
+  model-mock:
+    build:
+      context: ./model_mock
+      dockerfile: Dockerfile
+    environment:
+      MODEL_MOCK_DELAY_SECONDS: "${MODEL_MOCK_DELAY_SECONDS:-0}"
+      MODEL_MOCK_EMPTY: "${MODEL_MOCK_EMPTY:-}"
+    # No published port either: Hermes reaches it on the compose network.
+    restart: "no"
+
+volumes:
+  hermes-data:

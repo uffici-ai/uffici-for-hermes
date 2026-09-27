@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/hello.schema.json",
+  "title": "Hello",
+  "description": "The first frame on the connection, in BOTH directions — one type name, two shapes, told apart by who received it. The plugin's carries the token and is refused without it; the companion's answers. A frame of any other type before hello closes the connection with hello_required.",
+  "type": "object",
+  "required": [
+    "v",
+    "type"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "hello"
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/pluginHello"
+    },
+    {
+      "$ref": "#/$defs/companionHello"
+    }
+  ],
+  "$defs": {
+    "pluginHello": {
+      "title": "Hello (plugin → companion)",
+      "type": "object",
+      "required": [
+        "harness",
+        "harnessVersion",
+        "pluginVersion",
+        "token",
+        "contextBudgetTokens"
+      ],
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The harness this plugin translates for, e.g. hermes."
+        },
+        "harnessVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "pluginVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "token": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 256,
+          "description": "🔴 SECRET-CLASS. Read from $UFFICI_HOME/wire-token, compared in constant time, and NEVER logged by either side — not at any level, not in an error, not inside a whole-frame dump."
+        },
+        "contextBudgetTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000,
+          "description": "The harness's share of its window for platform content. The platform sizes to it with its own estimator; the companion never estimates."
+        }
+      }
+    },
+    "companionHello": {
+      "title": "Hello (companion → plugin)",
+      "type": "object",
+      "required": [
+        "companionVersion"
+      ],
+      "properties": {
+        "companionVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "agentSlug": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Known from wave 1b; the fixture supplies a fixed value."
+        },
+        "orgSlug": {
+          "type": "string",
+          "maxLength": 64
+        }
+      }
+    }
+  }
+}

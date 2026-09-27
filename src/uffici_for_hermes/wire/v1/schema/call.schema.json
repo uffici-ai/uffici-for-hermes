@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/call.schema.json",
+  "title": "Call",
+  "description": "plugin → companion. One platform control-plane operation through the companion, answered by exactly one result with the same callId. Calls are concurrent: several may be in flight and their results may arrive in any order. There is no companion → plugin call. post and done stay explicit frames and never ride this tunnel.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "callId",
+    "op",
+    "deadlineMs"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "call"
+    },
+    "callId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Chosen by the plugin and echoed verbatim on the result. Opaque; a UUID v4 is the recommended form."
+    },
+    "op": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+      "description": "The operation's name. An OPEN vocabulary, never an enum: a closed one here would make every new operation a wire change. But a NAME, never free text: it is the one caller-chosen field either side logs. An op the companion does not serve is an unknown_op result, never a close. The payload's shape is the control plane's to schema and version."
+    },
+    "deadlineMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 300000,
+      "description": "Milliseconds, relative to send. The companion answers by then, with a timed_out result if the operation has not finished. A call never extends the deadline of any request."
+    },
+    "payload": {
+      "type": "object",
+      "description": "The operation's input, opaque to the wire. The whole frame is bounded at 262144 encoded bytes (MAX_CALL_PAYLOAD_BYTES); over it the companion answers malformed_payload, never a truncation. Never logged, on either side."
+    }
+  }
+}

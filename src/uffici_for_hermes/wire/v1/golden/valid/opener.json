@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "type": "opener",
+  "requestId": "req_01J8ZQ7X4K2M9P0Q",
+  "entries": [
+    {
+      "id": "entry_1",
+      "cursor": "c0001",
+      "at": "2026-09-17T14:01:00Z",
+      "author": {
+        "type": "member",
+        "id": "member_1",
+        "label": "Ana Marques",
+        "self": false
+      },
+      "kind": "message",
+      "text": "Can you check the Lisbon invoice?"
+    },
+    {
+      "id": "entry_2",
+      "cursor": "c0002",
+      "at": "2026-09-17T14:02:00Z",
+      "author": {
+        "type": "agent",
+        "id": "agent_2",
+        "label": "Smith",
+        "self": true,
+        "handle": "@smith"
+      },
+      "kind": "message",
+      "text": "I will take a look."
+    }
+  ]
+}

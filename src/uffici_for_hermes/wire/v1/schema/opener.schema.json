@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/opener.schema.json",
+  "title": "Opener",
+  "description": "companion → plugin. Sent only after an accepted ack with session fresh, and before the turn. The local hop is free, so this is fetched then and not carried on every brief.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "requestId",
+    "entries"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "opener"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": {
+        "$ref": "entry.schema.json"
+      },
+      "description": "The verbatim recent tail within the harness's declared budget, INCLUDING the agent's own entries."
+    }
+  }
+}

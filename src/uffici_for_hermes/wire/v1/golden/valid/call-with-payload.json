@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "call",
+  "callId": "b2e8d4f1-6a3c-4f9e-8d2b-5c7a1e9f3b64",
+  "op": "memory.recall",
+  "deadlineMs": 8000,
+  "payload": {
+    "conversationId": "conv_01J8ZQ7X4K2M9P0Q",
+    "query": "what did we agree about the Lisbon invoice?",
+    "limit": 5
+  }
+}

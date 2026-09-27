@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/done.schema.json",
+  "title": "Done",
+  "description": "plugin → companion. Closes the request. empty is an explicit 'nothing to say', which the platform notices.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "requestId",
+    "outcome"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "done"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "answered",
+        "empty",
+        "error",
+        "cancelled"
+      ]
+    },
+    "errorClass": {
+      "type": "string",
+      "enum": [
+        "harness_error",
+        "model_error",
+        "timeout",
+        "cancelled",
+        "internal"
+      ],
+      "description": "Required in spirit when outcome is error; a closed vocabulary so a failure is classified, never a message."
+    }
+  }
+}

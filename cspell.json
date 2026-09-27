@@ -1,0 +1,18 @@
+{
+	"version": "0.2",
+	"language": "en",
+	"useGitignore": true,
+	"dictionaries": ["python", "node", "softwareTerms", "companies", "misc", "filetypes"],
+	"words": [
+		"doorbell",
+		"hatchling",
+		"httpx",
+		"pyproject",
+		"pytest",
+		"pythonpath",
+		"testpaths",
+		"uffici",
+		"velcra"
+	],
+	"ignorePaths": [".git", "uv.lock"]
+}

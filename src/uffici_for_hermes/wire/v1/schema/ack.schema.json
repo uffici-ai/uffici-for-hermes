@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ack.schema.json",
+  "title": "Ack",
+  "description": "plugin → companion. Names the outcome and the session state. An opener follows only an accepted ack with session fresh.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "requestId",
+    "outcome",
+    "session"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "ack"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "deferred",
+        "rejected"
+      ],
+      "description": "rejected redelivers; deferred keeps the request open without a session yet."
+    },
+    "session": {
+      "type": "string",
+      "enum": [
+        "fresh",
+        "resumed"
+      ],
+      "description": "Freshness is the HARNESS's fact, not the platform's. fresh is what earns an opener."
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 200
+    }
+  }
+}

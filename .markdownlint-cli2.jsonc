@@ -1,0 +1,16 @@
+{
+	// This module's own Markdown configuration. The platform's root config
+	// ignores `uffici/**` deliberately — a child owns its gates, so the rules
+	// travel with it when the release mirror exports the subtree
+	//.
+	"gitignore": true,
+	"config": {
+		"default": true,
+		// Documentation prose is not wrapped at 80 columns.
+		"MD013": false,
+		// Bare URLs are allowed in documentation.
+		"MD034": false,
+		// ASCII diagrams carry no language tag.
+		"MD040": false
+	}
+}

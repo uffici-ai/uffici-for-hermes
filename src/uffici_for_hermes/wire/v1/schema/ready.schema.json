@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ready.schema.json",
+  "title": "Ready",
+  "description": "plugin → companion. The harness can now ANSWER, which is not the same as the plugin being connected. A plugin attaches while its harness is still starting — Hermes connects its platform adapters before the gateway reaches `running`, and its own base adapter warns that an inbound message arriving before the message handler is installed is 'silently discarded on an adapter that still polls and sends'. So `hello` means 'I am here' and `ready` means 'send me work'. The companion HOLDS every ring until it arrives: a brief delivered into that window is answered by a harness that cannot answer, and the turn closes empty with the reply arriving seconds later, for a request that is already gone.",
+  "type": "object",
+  "required": [
+    "v",
+    "type"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "ready"
+    },
+    "harnessVersion": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "The harness's version, now that the plugin can read it. It is often unknown at hello time, because the harness is still starting."
+    }
+  }
+}

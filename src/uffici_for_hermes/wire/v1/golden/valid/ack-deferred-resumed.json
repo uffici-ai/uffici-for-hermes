@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "type": "ack",
+  "requestId": "req_01J8ZQ7X4K2M9P0Q",
+  "outcome": "deferred",
+  "session": "resumed",
+  "reason": "busy with an earlier request"
+}

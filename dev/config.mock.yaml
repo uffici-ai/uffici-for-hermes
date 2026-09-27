@@ -1,0 +1,59 @@
+# Hermes's configuration for a run against the deterministic model.
+#
+# 🔴 A NAMED PROVIDER, not an environment variable. `HERMES_MODEL_BASE_URL` —
+# which #2013 wired and #2014's issue names — appears NOWHERE in Hermes 0.21.3:
+# setting it does nothing, so every "mock" run actually called OpenRouter and
+# got HTTP 401 with the placeholder key. The turns then closed `empty`, which
+# read like an adapter defect and was not one.
+#
+# Hermes selects an inference endpoint through `model.provider` plus a
+# `providers:` entry, and that is what this file does.
+# 🔴 The CURRENT schema version, not the oldest migratable one.
+#
+# Without this key Hermes says the config "predates version 12 (~2 years old)"
+# and cannot auto-migrate it. Writing 12 — which that warning names — is worse:
+# Hermes then migrates 12 -> 44 and FAILS, because this file is mounted
+# read-only, so the boot carries `ERROR: Read-only file system`. Writing the
+# version the file is actually written against means no migration is attempted
+# at all. Found by reading a real container's first ten log lines.
+_config_version: 44
+
+plugins:
+  enabled:
+    - uffici-for-hermes
+
+gateway:
+  platforms:
+    uffici:
+      enabled: true
+  busy_input_mode: interrupt
+
+# 🔴 `approvals` is left at Hermes's own default, deliberately (#2164). When Hermes asks a
+# person to approve a command, the plugin answers DENY at once with a reason the agent
+# relays: this platform has no approval channel until stage 3, and waiting on nobody
+# holds the turn until it expires. `approvals.mode: off` here would make the dev rig run
+# tools unattended that a customer's harness would refuse, and hide exactly the path
+# the real-provider gate has to exercise.
+
+tool_progress: off
+streaming:
+  enabled: false
+
+telemetry:
+  enabled: false
+analytics:
+  enabled: false
+update_check:
+  enabled: false
+
+model:
+  # Any name the mock will answer for; it echoes whatever it is asked.
+  default: "mock-model"
+  provider: "modelmock"
+
+providers:
+  modelmock:
+    base_url: "http://model-mock:8080/v1"
+    # The mock ignores it, and a run that cannot reach the network must not be
+    # able to spend anything.
+    api_key: "mock-no-key"

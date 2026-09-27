@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "type": "result",
+  "callId": "e9a1c5d7-2f4b-4c8e-a6d3-8b1f7e2c9a05",
+  "error": {
+    "class": "timed_out",
+    "instruction": "The platform did not answer in time; tell the person, and try again shortly."
+  }
+}

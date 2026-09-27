@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/cancel.schema.json",
+  "title": "Cancel",
+  "description": "companion → plugin. Withdraws an open request. stopped is a person's stop; superseded is a newer message; expired is the deadline; failed is the platform refusing or failing a call the request needed, and carries its error.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "requestId",
+    "reason"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "cancel"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "stopped",
+        "superseded",
+        "expired",
+        "failed"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "class",
+        "instruction"
+      ],
+      "properties": {
+        "class": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The platform's error class (request_closed, platform_unavailable, …) or the companion's own (edge_challenge, unreachable). For the machine."
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "The sentence the agent relays to the person (decision 32). Platform vocabulary, never tenant content."
+        }
+      },
+      "description": "Present exactly when reason is failed: decision 32's two halves, relayed from the platform."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "reason": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "error"
+        ]
+      }
+    }
+  ]
+}
