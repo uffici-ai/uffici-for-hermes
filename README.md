@@ -33,10 +33,27 @@ Uffici conversation**, and what the session sends is the agent's answer.
   may load but is untested.
 - Python 3.13, which is what Hermes's own environment provides. The plugin runs inside that
   environment and depends only on libraries Hermes already ships (`websockets`, `httpx`).
-- The [Uffici companion](https://github.com/uffici-ai/uffici-companion), installed and paired
-  on the same machine or in the same pod.
+- The [Uffici companion](https://github.com/uffici-ai/uffici-companion) on the same machine
+  or in the same pod.
 
 ## Installing it
+
+One line, on the machine that runs Hermes, installs the companion and this plugin together
+(the Uffici portal shows it on the agent's **Connect** tab with your agents host filled in):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
+  | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
+```
+
+For this plugin, `uffici setup` fetches `uffici-for-hermes.tar.gz` from this repository's
+latest release, verifies it against the release's checksum list, and follows the install
+manifest it carries ([uffici-plugin.json](uffici-plugin.json)): it copies the plugin into
+Hermes's plugin directory, switches the Uffici platform on with `hermes config set`, writes
+the companion's socket and token file into Hermes's environment file, and enables the plugin
+by name. Then restart the Hermes gateway.
+
+### By hand
 
 Hermes loads a plugin from one directory that is both an importable package and the home of
 its manifest, so copy the **package** directory, not this repository's root, into the plugin
@@ -46,26 +63,18 @@ manifest:
 ```sh
 cp -r src/uffici_for_hermes "$HERMES_HOME/plugins/uffici-for-hermes"
 hermes plugins enable uffici-for-hermes
+hermes config set gateway.platforms.uffici.enabled true
 ```
 
-Then switch the Uffici platform on in Hermes's configuration (`$HERMES_HOME/config.yaml`),
-and tell it to interrupt a running turn when a new message arrives, which is how a withdrawn
-turn stops:
-
-```yaml
-gateway:
-  platforms:
-    uffici:
-      enabled: true
-  busy_input_mode: interrupt
-```
-
-Finally, tell the plugin where the companion is. On a laptop or server, the companion's Unix
-socket and its token file, both under the companion's `$UFFICI_HOME` (`~/.uffici` by default):
+Then tell the plugin where the companion is. On a laptop or server, the companion's Unix
+socket and its token file, both under the companion's `$UFFICI_HOME` (`~/.uffici` by
+default), written into the environment file Hermes reads:
 
 ```sh
-export UFFICI_WIRE_SOCKET="$HOME/.uffici/wire.sock"
-export UFFICI_WIRE_TOKEN_FILE="$HOME/.uffici/wire-token"
+cat >> "$(hermes config env-path)" <<EOF
+UFFICI_WIRE_SOCKET=$HOME/.uffici/wire.sock
+UFFICI_WIRE_TOKEN_FILE=$HOME/.uffici/wire-token
+EOF
 ```
 
 In a pod, its loopback address and the token from a Secret instead. Every variable:
@@ -122,6 +131,19 @@ such a setting appears.
 - Not a credential holder. The agent key never reaches this process.
 - Not a store of Uffici's data. Conversations, context and summaries are Uffici's, so changing
   harness loses none of them.
+
+## Releases
+
+Each release is built in this repository by its own workflow, from the tag: the tarball
+`uffici-for-hermes.tar.gz` (the package directory, the install manifest stamped with the
+version, and the license files), `checksums.txt`, a keyless Sigstore signature bundle and a
+build attestation. Verify one before installing it by hand:
+
+```sh
+cosign verify-blob --bundle uffici-for-hermes.tar.gz.sigstore.json \
+  --certificate-identity-regexp 'https://github.com/uffici-ai/uffici-for-hermes/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com uffici-for-hermes.tar.gz
+```
 
 ## Build and test from source
 

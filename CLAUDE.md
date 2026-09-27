@@ -28,7 +28,8 @@ this project depends on no other toolchain, by design.
 ## Layout
 
 - `src/uffici_for_hermes/` — the plugin package Hermes loads; `wire/v1/` inside it is a byte-identical copy of the companion's local-wire contract, held equal at the source.
-- `tests/` — the test suite, including the Markdown link guard, run against a stand-in transcribed from the pinned Hermes source.
+- `uffici-plugin.json` — the install manifest `uffici setup` acts on, at the top of every release tarball; `version` is stamped by `.github/workflows/release.yml` from the tag.
+- `tests/` — the test suite, including the Markdown link guard and the manifest's pin to the package, run against a stand-in transcribed from the pinned Hermes source.
 - `dev/` — a container recipe for the pinned Hermes and a deterministic model stand-in, for exercising the plugin end to end without an account or a provider.
 
 ## Dependencies

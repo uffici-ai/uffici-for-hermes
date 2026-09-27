@@ -30,9 +30,10 @@ def _install_block() -> str:
     text = README.read_text(encoding="utf-8")
     section = text.split("## Installing it", 1)
     assert len(section) == 2, "README.md has no '## Installing it' section — the portal cites it"
-    block = re.search(r"```sh\n(.*?)```", section[1], re.S)
-    assert block, "the install section has no sh code block"
-    return block.group(1)
+    blocks = re.findall(r"```sh\n(.*?)```", section[1], re.S)
+    by_hand = [b for b in blocks if "cp -r" in b]
+    assert by_hand, "the install section has no by-hand sh block with `cp -r`"
+    return by_hand[0]
 
 
 def test_readme_copies_the_package_directory_not_the_repository_root() -> None:

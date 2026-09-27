@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "harness": "hermes",
+  "name": "uffici-for-hermes",
+  "version": "0.0.0",
+  "pluginDir": "plugins/uffici-for-hermes",
+  "homeEnv": "HERMES_HOME",
+  "defaultHome": "~/.hermes",
+  "enable": ["hermes", "plugins", "enable", "uffici-for-hermes"],
+  "configSet": ["hermes", "config", "set"],
+  "config": [
+    { "key": "gateway.platforms.uffici.enabled", "value": "true" }
+  ],
+  "envPath": ["hermes", "config", "env-path"],
+  "envFile": ".env",
+  "env": {
+    "UFFICI_WIRE_SOCKET": "${wireSocket}",
+    "UFFICI_WIRE_TOKEN_FILE": "${wireTokenFile}"
+  },
+  "restart": "Restart the Hermes gateway (`hermes gateway`) so it loads the plugin; the agent shows Online in the portal once it does."
+}
