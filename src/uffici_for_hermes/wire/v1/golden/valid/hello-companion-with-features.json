@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "hello",
+  "companionVersion": "0.4.0",
+  "agentSlug": "smith",
+  "orgSlug": "acme",
+  "features": [
+    "question"
+  ]
+}

@@ -33,9 +33,19 @@ gateway:
     uffici:
       enabled: true
 
-  # Interrupt rather than queue: a superseding ring should stop the turn in
-  # flight, which is what the platform's own supersede expects to happen.
+# Interrupt rather than queue: a superseding ring should stop the turn in
+# flight, which is what the platform's own supersede expects to happen. Hermes
+# reads this under `display`, never `gateway`, where it is silently ignored
+# (#2193); `interrupt` is also Hermes's default, and is written anyway so a
+# changed default cannot change the loop.
+display:
   busy_input_mode: interrupt
+  # The two chat notices `uffici setup` switches off, as the setup manifest writes them
+  # (`uffici-plugin.json`), so the rig's Hermes matches an installed one (#2247).
+  memory_notifications: "off"
+  platforms:
+    uffici:
+      long_running_notifications: false
 
 # 🔴 `approvals` is left at Hermes's own default, deliberately (#2164). When Hermes asks a
 # person to approve a command, the plugin answers DENY at once with a reason the agent

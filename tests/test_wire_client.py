@@ -132,6 +132,26 @@ def test_hello_carries_the_token_and_the_budget() -> None:
     assert hello["token"] == "t" * 40
 
 
+def test_hello_names_this_harness_process_and_the_name_is_stable_within_it() -> None:
+    """🔴 #2234: the companion tells a RESTARTED harness from a reconnect by this id.
+
+    A restart must be handed what its predecessor acknowledged; a reconnect of the same
+    process must not be (it is still answering). So the id is minted once per process —
+    every hello this process sends carries the same one — and valid against the schema.
+    """
+    import re
+
+    from uffici_for_hermes.wire import WIRE_V1
+
+    first = plugin_hello("t" * 40, "0.21.3", "0.1.0", 12345)
+    second = plugin_hello("t" * 40, "0.21.3", "0.1.0", 12345)
+    assert first["processId"] == second["processId"]
+    schema = json.loads((WIRE_V1 / "schema" / "hello.schema.json").read_text())
+    rule = schema["$defs"]["pluginHello"]["properties"]["processId"]
+    assert re.fullmatch(rule["pattern"], first["processId"])
+    assert rule["minLength"] <= len(first["processId"]) <= rule["maxLength"]
+
+
 # --------------------------------------------------------------------------- backoff
 
 

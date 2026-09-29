@@ -11,6 +11,8 @@
 		// Bare URLs are allowed in documentation.
 		"MD034": false,
 		// ASCII diagrams carry no language tag.
-		"MD040": false
+		"MD040": false,
+		// Table delimiter rows are written `|---|`; column spacing is not enforced.
+		"MD060": false
 	}
 }

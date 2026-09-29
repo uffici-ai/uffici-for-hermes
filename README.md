@@ -23,7 +23,9 @@ Uffici conversation**, and what the session sends is the agent's answer.
 3. When Hermes is done, the plugin closes the turn: answered, or empty when the agent had
    nothing to add, or with an error class when it could not answer. Uffici tells the person
    in every case; a turn never ends in silence.
-4. When Uffici withdraws a turn, the plugin stops Hermes with its own `/stop`.
+4. When Uffici withdraws a turn, the plugin stops Hermes with its own `/stop` — first
+   releasing any question the turn is waiting on, which Hermes would otherwise keep waiting
+   for.
 
 ## Requirements
 
@@ -55,7 +57,8 @@ again and replaces its key.
 For this plugin, `uffici setup` fetches `uffici-for-hermes.tar.gz` from this repository's
 latest release, verifies it against the release's checksum list, and follows the install
 manifest it carries ([uffici-plugin.json](uffici-plugin.json)): it copies the plugin into
-Hermes's plugin directory, switches the Uffici platform on with `hermes config set`, writes
+Hermes's plugin directory, switches the Uffici platform on and two of Hermes's own chat
+notices off (see [Hermes's own notices](#hermess-own-notices)) with `hermes config set`, writes
 the companion's socket and token file into Hermes's environment file, and enables the plugin
 by name. Then restart the Hermes gateway.
 
@@ -70,6 +73,8 @@ manifest:
 cp -r src/uffici_for_hermes "$HERMES_HOME/plugins/uffici-for-hermes"
 hermes plugins enable uffici-for-hermes
 hermes config set gateway.platforms.uffici.enabled true
+hermes config set display.platforms.uffici.long_running_notifications false
+hermes config set display.memory_notifications off
 ```
 
 Then tell the plugin where the companion is. On a laptop or server, the companion's Unix
@@ -93,14 +98,36 @@ In a pod, its loopback address and the token from a Secret instead. Every variab
 | `UFFICI_WIRE_TOKEN_FILE` | The companion's token file, `$UFFICI_HOME/wire-token`. One of this and `UFFICI_WIRE_TOKEN` is required; the plugin refuses to connect without a token. |
 | `UFFICI_WIRE_TOKEN` | The token itself, for a container that shares no filesystem with the companion. Source it from a Secret. |
 | `UFFICI_CONTEXT_SHARE` | The fraction of this Hermes's context window Uffici may fill with conversation content. Default **0.25**, less a 10 % margin for tokenizer drift. |
-| `UFFICI_CONTEXT_WINDOW_TOKENS` | This model's context window, when the plugin cannot read it from Hermes's own configuration. |
+| `UFFICI_CONTEXT_WINDOW_TOKENS` | A correction, not a setting you need: the model's context window in tokens, used instead of the one Hermes reports. Leave it unset unless Hermes's own number is wrong. |
 
-The plugin never ships a context window of its own. It asks Hermes for the model's window and
-declares a share of it; when the window cannot be learned, it refuses to connect and names the
-variable to set, because the number it declares is what Uffici sizes its reads to.
+The plugin never ships a context window of its own. It asks Hermes which model it runs and what
+window Hermes itself uses for that model — the same number Hermes compacts its context against —
+and declares a share of it. To change what Hermes uses, set `model.context_length` in Hermes's
+`config.yaml`; the plugin follows it. Only when no window can be learned at all does the plugin
+refuse to connect, naming the variable above, because the number it declares is what Uffici
+sizes its reads to.
 
 Restart the Hermes gateway. In the Uffici portal the agent shows **Online**; send it a message
 in a conversation it participates in and the answer appears there.
+
+### Hermes's own notices
+
+Hermes posts some messages of its own into a chat: a notice when it restarts, a "⏳ Working"
+line during a long turn, a note after it reviews its memory. It sends them the same way it
+sends the agent's replies, so on Uffici they would appear as the agent speaking. The plugin
+keeps them out of your conversations:
+
+- **The restart notice** is switched off for the Uffici platform by the plugin itself. Uffici
+  resumes an interrupted request on its own, so there is nothing for the person to do.
+- **The "⏳ Working" line** is switched off for the Uffici platform only
+  (`display.platforms.uffici.long_running_notifications`).
+- **The memory-review note** can only be switched for the whole Hermes, not per platform, so
+  setup turns it off everywhere this Hermes posts (`display.memory_notifications`). Hermes
+  still reviews its memory; only the chat note goes. Set it back to `on` if this Hermes also
+  serves another chat platform where you want it.
+
+Hermes's line when a background process finishes is left as it is: switching it off would also
+stop Hermes telling the agent that the process ended.
 
 ## How it is authorized
 
@@ -122,6 +149,17 @@ such a setting appears.
   person to approve a command (its guardian does this on every call against a reasoning
   model), the plugin answers no at once and the agent tells the person, inside the turn's
   deadline. Approvals through Uffici come with a later release.
+- **A question reaches the person as a question.** When the agent asks something (Hermes's
+  `clarify`), the person sees it in Uffici as a card with the choices offered and a field for
+  their own answer, and the agent picks up from their answer. With an older companion the
+  question is asked as a numbered list instead.
+- **Restarting Hermes loses no turn.** A turn that was under way when Hermes stopped is
+  handed to the Hermes that starts next, and answered there; a plugin that merely
+  reconnects keeps the turn it was working on.
+- **Hermes's status lines stay in Hermes.** Its progress messages ("still waiting for the
+  other Hermes process…") are never posted to the conversation: the person sees that the
+  agent is working from Uffici itself, and every post in the conversation is the agent
+  speaking.
 - **The turn ends when Hermes is idle**, not when its message handler returns: a message that
   arrives while Hermes is restoring sessions at start-up, or for a session that is already
   busy, is handled in order and the turn closes when the answer is complete.

@@ -45,6 +45,6 @@ optional_env:
     prompt: "Context share"
     password: false
   - name: UFFICI_CONTEXT_WINDOW_TOKENS
-    description: "This model's context window, when the harness's own configuration cannot be read"
-    prompt: "Context window in tokens (or empty)"
+    description: "A correction to the context window Hermes reports for its model; leave empty unless Hermes is wrong"
+    prompt: "Context window in tokens (normally empty)"
     password: false

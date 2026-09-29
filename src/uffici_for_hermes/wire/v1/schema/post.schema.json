@@ -27,6 +27,35 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 131072
+    },
+    "question": {
+      "type": "object",
+      "description": "Present when the post is the harness ASKING the person something: the text is the question, and it reaches the person as the question card. The person's answer arrives as the next brief's delta, like any message. Sent only to a companion whose hello lists the `question` feature.",
+      "required": [
+        "id",
+        "choices",
+        "multiSelect"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,200}$",
+          "description": "The harness's own id for the question, which the answer names."
+        },
+        "choices": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "multiSelect": {
+          "type": "boolean"
+        }
+      }
     }
   }
 }

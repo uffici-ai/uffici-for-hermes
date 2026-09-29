@@ -25,6 +25,11 @@ Requires [uv](https://docs.astral.sh/uv/) and the Python pinned in
 [pyproject.toml](pyproject.toml). The Markdown link guard runs inside `pytest` —
 this project depends on no other toolchain, by design.
 
+Two more workflows run beside it:
+
+- [.github/workflows/lint-docs.yml](.github/workflows/lint-docs.yml) — Markdown lint and spelling against [.markdownlint-cli2.jsonc](.markdownlint-cli2.jsonc) and [cspell.json](cspell.json), with Node and the two tools installed by exact version in the job, so the check above stays uv only.
+- [.github/workflows/e2e.yml](.github/workflows/e2e.yml) — a real Hermes, running this plugin, answers a scripted conversation against a released Uffici companion: its published image by version, and the script that release ships. `dev/e2e.py` is the whole run and needs Docker; its verdict is pinned by `tests/test_e2e_runner.py`. It runs where the companion's release can be read without a credential.
+
 ## Layout
 
 - `src/uffici_for_hermes/` — the plugin package Hermes loads; `wire/v1/` inside it is a byte-identical copy of the companion's local-wire contract, held equal at the source.

@@ -30,20 +30,8 @@ jobs:
       - name: Check
         run: uv run --frozen ruff check . && uv run --frozen pytest
 
-# 🔴 WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO, and when that changes.
-#
-# #2014 asks for the end-to-end conversation job to live here too, "mirror
-# ready", identical to the platform's. It cannot, and the reason is the fence
-# this project exists behind: that job needs a COMPANION to talk to, and the
-# companion is a different project in a different repository. Nothing here may
-# reference it (`.claude/rules/uffici.md`), and the mirrored repository has no
-# copy of it to reference.
-#
-# The platform repository runs that job for both projects, because there both
-# are present — which is exactly the asymmetry the fence describes: the
-# platform may reference a child; a child never references the platform.
-#
-# This becomes possible when the companion is DISTRIBUTED (wave 5): a released
-# binary or image this workflow can fetch by version. Until then the honest
-# position is that the conversation is verified in the platform repository and
-# stated here, rather than a job that looks mirrored and is not.
+# The end-to-end conversation is NOT here: it needs a companion, which is a
+# different project in a different repository. `e2e.yml` runs it against the
+# companion's RELEASED image by version — the gate on a release — and
+# `lint-docs.yml` runs the Markdown and spelling configs, which need Node and so
+# stay out of this single-toolchain check.

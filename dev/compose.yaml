@@ -32,7 +32,6 @@ services:
       # The refusal belongs where it is actionable: the plugin names both token
       # variables, and the companion mints its own.
       UFFICI_WIRE_TOKEN: "${UFFICI_WIRE_TOKEN:-}"
-      UFFICI_CONTEXT_WINDOW_TOKENS: "${UFFICI_CONTEXT_WINDOW_TOKENS:-32000}"
       # The provider. `hermes:up --mock` points this at the model mock instead.
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       # 🔴 Never the root override. The image refuses a root gateway on purpose.

@@ -17,6 +17,7 @@ import contextlib
 import json
 import logging
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -154,6 +155,15 @@ def backoff_seconds(attempt: int) -> float:
     return min(BACKOFF_FIRST_SECONDS * (2 ** (attempt - 1)), BACKOFF_MAX_SECONDS)
 
 
+#: This harness PROCESS, minted once at import and sent on every hello (#2234).
+#:
+#: 🔴 The one thing that tells the companion a restarted Hermes from a reconnect. A
+#: reconnect keeps working on what it acknowledged; a restart holds nothing of the
+#: old turns, so the companion hands them to the new process. Not a secret and not an
+#: identity: a fresh one each time the process starts, and nothing is derived from it.
+PROCESS_ID = uuid.uuid4().hex
+
+
 def plugin_hello(token: str, harness_version: str, plugin_version: str, budget_tokens: int) -> dict:
     """The first frame, carrying the token."""
     return {
@@ -164,6 +174,7 @@ def plugin_hello(token: str, harness_version: str, plugin_version: str, budget_t
         "pluginVersion": plugin_version,
         "token": token,
         "contextBudgetTokens": budget_tokens,
+        "processId": PROCESS_ID,
     }
 
 

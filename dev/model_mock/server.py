@@ -45,6 +45,16 @@ SLOW_MARKER = os.environ.get("MODEL_MOCK_SLOW_MARKER", "[answer-slowly]")
 #: How long a turn carrying the slow marker takes.
 SLOW_SECONDS = float(os.environ.get("MODEL_MOCK_SLOW_SECONDS", "30"))
 
+#: 🔴 A marker a script puts in ONE message to make that turn ASK (#2232): the model
+#: calls Hermes's ``clarify`` tool, which the plugin turns into the question card. Read
+#: from the LAST user message, like the slow marker, so a later turn carrying it in its
+#: history answers instead of asking again.
+ASK_MARKER = os.environ.get("MODEL_MOCK_ASK_MARKER", "[ask-a-question]")
+
+#: What a marked turn asks, and offers.
+ASK_QUESTION = "Which board do you mean?"
+ASK_CHOICES = ["Uffici task board", "Another app"]
+
 MODEL_ID = os.environ.get("MODEL_MOCK_MODEL", "mock-model")
 
 #: The largest request body this will read into memory.
@@ -65,6 +75,39 @@ def _last_user_message(payload: dict) -> str:
                     part.get("text", "") for part in content if isinstance(part, dict)
                 )
     return ""
+
+
+def _clarify_result(payload: dict) -> str | None:
+    """The person's answer, when this request resumes a turn after its ``clarify``.
+
+    The last message is the tool's result; its JSON carries ``user_response`` (the
+    pinned ``tools/clarify_tool.py``). A result that is not that shape is still the
+    answer, as text.
+    """
+    messages = payload.get("messages") or []
+    last = messages[-1] if messages else {}
+    if last.get("role") != "tool":
+        return None
+    content = last.get("content")
+    try:
+        parsed = json.loads(content) if isinstance(content, str) else None
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and "user_response" in parsed:
+        return str(parsed.get("user_response") or "")
+    return str(content or "")
+
+
+def _clarify_call() -> dict:
+    """The one tool call a marked turn makes."""
+    return {
+        "id": "call_mock_clarify",
+        "type": "function",
+        "function": {
+            "name": "clarify",
+            "arguments": json.dumps({"question": ASK_QUESTION, "choices": ASK_CHOICES}),
+        },
+    }
 
 
 def _completion(text: str) -> dict:
@@ -119,6 +162,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         # The connection is gone; do not try to read another request on it.
         self.close_connection = True
+
+    def _stream_tool_call(self, call: dict) -> None:
+        """A tool call as Server-Sent Events: the role, the call, ``tool_calls``, done."""
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            for payload in (
+                _chunk("", None),
+                {**_chunk("", None), "choices": [
+                    {"index": 0, "delta": {"tool_calls": [{"index": 0, **call}]},
+                     "finish_reason": None},
+                ]},
+                _chunk("", "tool_calls"),
+            ):
+                self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
 
     def _stream(self, text: str) -> None:
         """Answer as Server-Sent Events.
@@ -213,6 +277,12 @@ class Handler(BaseHTTPRequestHandler):
         # with nothing should not have to model that arrangement.
         marker_present = bool(EMPTY_MARKER) and EMPTY_MARKER in json.dumps(payload)
         text = "" if (ANSWER_EMPTY or marker_present) else REPLY_PREFIX + asked[:500]
+        # A question (#2232): the marked turn calls clarify, and the turn it resumes
+        # after the person answered says what they chose.
+        answered = _clarify_result(payload)
+        asks = answered is None and bool(ASK_MARKER) and ASK_MARKER in asked
+        if answered is not None:
+            text = f"{REPLY_PREFIX}you answered: {answered[:200]}"
 
         # 🔴 One line per request, and it carries NO transcript content — a
         # count, two booleans and two lengths. The default handler's request
@@ -227,10 +297,25 @@ class Handler(BaseHTTPRequestHandler):
         _served += 1
         print(
             f"[mock] request {_served}: stream={bool(wants_stream)} "
-            f"marker={marker_present} slow={slow} asked_chars={len(asked)} reply_chars={len(text)}",
+            f"marker={marker_present} slow={slow} asks={asks} asked_chars={len(asked)} "
+            f"reply_chars={len(text)}",
             flush=True,
         )
 
+        if asks:
+            if wants_stream:
+                self._stream_tool_call(_clarify_call())
+                return
+            self._reply(200, {
+                **_completion(""),
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": None,
+                                "tool_calls": [_clarify_call()]},
+                    "finish_reason": "tool_calls",
+                }],
+            })
+            return
         if wants_stream:
             self._stream(text)
             return

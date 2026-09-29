@@ -1,0 +1,46 @@
+# The first conversation against the RELEASED companion — the gate on a release.
+#
+# A real Hermes, running this plugin, answers the scripted conversation the
+# companion's release ships, against that release's published image. The
+# companion is fetched BY VERSION, never referenced as source: this repository
+# holds nothing of it, and a release is exactly what a customer installs.
+# `dev/e2e.py` is the whole run; its judgement is pinned by
+# `tests/test_e2e_runner.py` inside this project's own check.
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      companion-version:
+        description: "The companion release to run against: X.Y.Z, or latest"
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+
+jobs:
+  conversation:
+    name: First conversation against the released companion
+    # 🔴 Only where the companion's release is readable WITHOUT a credential. This
+    # workflow takes no secret, by design; in a private repository the image and
+    # the fixture cannot be fetched, so the job does not start rather than fail on
+    # every run for a reason no change here could fix.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned by SHA, like the check's: it installs the Python this project pins.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - name: The first conversation
+        # The input travels as an environment value, never interpolated into the
+        # script, so a dispatch cannot inject a command.
+        env:
+          COMPANION_VERSION: ${{ inputs.companion-version || 'latest' }}
+        run: uv run --frozen python dev/e2e.py --companion-version "$COMPANION_VERSION"

@@ -1,0 +1,68 @@
+# The first conversation against a RELEASED companion — the pod shape, with the
+# companion pulled by version instead of built. Run it through `dev/e2e.py`,
+# which fetches the release's own fixture, mints the wire token and judges the
+# run; `docker compose up` alone proves nothing.
+#
+# 🔴 It references NOTHING outside this project: the companion arrives as its
+# published image and the fixture as a file the runner downloads from that same
+# release, so this file works unchanged in the plugin's own repository.
+#
+# The pod shape, not the host shape: both halves share one network namespace
+# and talk over loopback. A companion on the host reached through
+# `host.docker.internal` cannot work on a Linux engine, where `host-gateway`
+# resolves to the bridge address and a companion bound to 127.0.0.1 refuses it.
+
+name: uffici-hermes-e2e
+
+services:
+  companion:
+    image: "ghcr.io/uffici-ai/uffici-companion:${UFFICI_COMPANION_VERSION:-latest}"
+    # `--attach-wait` tolerates Hermes booting behind the companion; the scripted
+    # host starts only once the plugin says its harness can answer.
+    command: ["run", "--attach-wait", "240s", "--tcp", "127.0.0.1:7411"]
+    environment:
+      UFFICI_WIRE_TOKEN: "${UFFICI_WIRE_TOKEN:-}"
+      # 🔴 The fixture, selected EXPLICITLY: the companion plays the scripted host
+      # and exits with its verdict, instead of dialling an agents host.
+      UFFICI_AGENTS_HOST: "fixture"
+      UFFICI_FIXTURE: "/fixture/ci/wave1.json"
+      UFFICI_ONCE: "1"
+    volumes:
+      # 🔴 Required, and `:?` is safe HERE: no other compose file includes this
+      # one, so the marker can only stop a run that forgot the fixture.
+      - "${UFFICI_E2E_FIXTURE_DIR:?set by dev/e2e.py — the release's fixture directory}:/fixture:ro"
+      - companion-home:/var/lib/uffici
+    restart: "no"
+
+  hermes:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - companion
+      - model-mock
+    network_mode: "service:companion"
+    environment:
+      UFFICI_COMPANION_URL: "http://127.0.0.1:7411"
+      UFFICI_WIRE_TOKEN: "${UFFICI_WIRE_TOKEN:-}"
+      # The mock authenticates nobody; Hermes wants the variable present.
+      OPENROUTER_API_KEY: "mock-no-key"
+      # 🔴 Never the root override. The image refuses a root gateway on purpose.
+      HERMES_UID: "${HERMES_UID:-1000}"
+      HERMES_GID: "${HERMES_GID:-1000}"
+    volumes:
+      - hermes-data:/opt/data
+      - ../src/uffici_for_hermes:/opt/data/plugins/uffici-for-hermes:ro
+      # The deterministic model: the run needs no secret and spends nothing.
+      - ./config.mock.yaml:/opt/data/config.yaml:ro
+    restart: "no"
+
+  model-mock:
+    build:
+      context: ./model_mock
+      dockerfile: Dockerfile
+    restart: "no"
+
+volumes:
+  hermes-data:
+  companion-home:

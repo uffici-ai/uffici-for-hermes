@@ -28,6 +28,8 @@ verbatim:
   what makes the runner call it instead of posting a plain-text ``/approve`` prompt
   through ``send`` — and ``resolve_gateway_approval(session_key, choice, resolve_all=False,
   reason=None, request_id=None)``, which answers how many pending approvals it resolved.
+- ``tools.clarify_gateway``: the pending-clarify store the ``clarify`` tool blocks on —
+  see ``ClarifyGateway`` below for exactly which functions and behaviours.
 - ``build_session_key`` (``gateway/session.py``): the dm-versus-group rule only —
   a ``dm`` with a non-empty ``chat_id`` sets ``isolate_user = not chat_id``, so
   the participant is left out and one conversation is one session however many
@@ -45,6 +47,7 @@ that turns out to be wrong is a defect in this file, and #2014 is where it shows
 # ruff: noqa: UP045, UP006, UP007
 from __future__ import annotations
 
+import contextlib
 import sys
 import types
 from abc import ABC, abstractmethod
@@ -82,6 +85,9 @@ class PlatformConfig:
     enabled: bool = False
     token: Optional[str] = None
     extra: dict[str, Any] = field(default_factory=dict)
+    #: ``gateway/config.py``: the per-platform gate on Hermes's restart/shutdown notice to
+    #: active chats (``_restart_notification_allowed``), defaulting True.
+    gateway_restart_notification: bool = True
 
 
 # --------------------------------------------------------------------------- gateway.session
@@ -206,6 +212,21 @@ class BasePlatformAdapter(ABC):
             chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata
         )
 
+    async def send_clarify(
+        self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+        session_key: str, metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Transcribed from base.py (v2026.9.24, :2852): the TEXT fallback — a numbered
+        list, ``mark_awaiting_text`` so the gateway's text intercept takes the next
+        message as the answer, and a plain ``send``."""
+        if choices:
+            numbered = [f"{i}. {choice}" for i, choice in enumerate(choices, start=1)]
+            text = "\n".join([f"❓ {question}", "", *numbered, "", "Reply with the number."])
+            CLARIFY.mark_awaiting_text(clarify_id)
+        else:
+            text = f"❓ {question}"
+        return await self.send(chat_id=chat_id, content=text, metadata=metadata)
+
     async def handle_message(self, event: MessageEvent) -> bool:
         """The stand-in records and admits. Tests that need a refusal replace it."""
         self.handled.append(event)
@@ -226,8 +247,20 @@ class BasePlatformAdapter(ABC):
     @abstractmethod
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]: ...
 
+    async def on_processing_start(self, event: MessageEvent) -> None:  # noqa: B027 — transcribed
+        """Hook called when background processing begins."""
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         return None
+
+    async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
+        """Transcribed from base.py (v2026.9.24, :3469); the real one logs a raise and
+        swallows it."""
+        hook = getattr(self, hook_name, None)
+        if not callable(hook):
+            return
+        with contextlib.suppress(Exception):
+            await hook(*args, **kwargs)
 
     @classmethod
     def supports_exec_approval_buttons(cls) -> bool:
@@ -282,6 +315,140 @@ class ApprovalQueue:
 APPROVALS = ApprovalQueue()
 
 
+# ----------------------------------------------------------------------- tools.clarify_gateway
+
+
+@dataclass
+class ClarifyEntry:
+    """``tools.clarify_gateway._ClarifyEntry``: one pending clarify inside a session."""
+
+    clarify_id: str
+    session_key: str
+    question: str
+    choices: Optional[list[str]]
+    multi_select: bool = False
+    response: Optional[str] = None
+    resolved: bool = False
+    awaiting_text: bool = False
+
+
+class ClarifyGateway:
+    """``tools.clarify_gateway`` (pinned v2026.9.24), as much as this plugin touches.
+
+    Transcribed: ``register`` starts an open-ended entry (no choices) in text mode;
+    ``resolve_gateway_clarify(clarify_id, response)`` answers False for an unknown or
+    already-resolved id; ``resolve_text_response_for_session(session_key, response)``
+    resolves the oldest pending entry of the session when the text is a choice's number
+    or label, or any text in text mode (the real coercion's multi-select and
+    ``(Recommended)`` branches are not reproduced); ``mark_awaiting_text`` flips an
+    entry into text mode; ``has_pending``; and ``clear_session(session_key)`` drops every
+    pending entry, answering each waiter ``""`` and returning how many it cancelled.
+    ``calls`` records every call in order, so a test can say what happened BEFORE what.
+    """
+
+    def __init__(self) -> None:
+        self.entries: dict[str, ClarifyEntry] = {}
+        self.calls: list[tuple[str, ...]] = []
+
+    def register(
+        self, clarify_id: str, session_key: str, question: str,
+        choices: Optional[list[str]], multi_select: bool = False,
+    ) -> ClarifyEntry:
+        entry = ClarifyEntry(
+            clarify_id, session_key, question, list(choices) if choices else None,
+            bool(multi_select) and bool(choices), awaiting_text=not bool(choices),
+        )
+        self.entries[clarify_id] = entry
+        return entry
+
+    def _pending(self, session_key: str) -> list[ClarifyEntry]:
+        return [
+            e for e in self.entries.values() if e.session_key == session_key and not e.resolved
+        ]
+
+    def resolve_gateway_clarify(self, clarify_id: str, response: str) -> bool:
+        self.calls.append(("resolve", clarify_id, response))
+        entry = self.entries.get(clarify_id)
+        if entry is None or entry.resolved:
+            return False
+        entry.response, entry.resolved = str(response), True
+        return True
+
+    def resolve_text_response_for_session(self, session_key: str, response: str) -> bool:
+        self.calls.append(("resolve_text", session_key, response))
+        pending = self._pending(session_key)
+        if not pending:
+            return False
+        entry, text = pending[0], str(response).strip()
+        value: Optional[str] = None
+        if not entry.choices or entry.awaiting_text:
+            value = text
+        elif text.isdigit() and 0 < int(text) <= len(entry.choices):
+            value = entry.choices[int(text) - 1]
+        else:
+            value = next((c for c in entry.choices if c.casefold() == text.casefold()), None)
+        if value is None:
+            return False
+        entry.response, entry.resolved = value, True
+        return True
+
+    def mark_awaiting_text(self, clarify_id: str) -> bool:
+        self.calls.append(("mark_awaiting_text", clarify_id))
+        entry = self.entries.get(clarify_id)
+        if entry is not None:
+            entry.awaiting_text = True
+        return entry is not None
+
+    def has_pending(self, session_key: str) -> bool:
+        return bool(self._pending(session_key))
+
+    def clear_session(self, session_key: str) -> int:
+        self.calls.append(("clear_session", session_key))
+        cancelled = 0
+        for clarify_id, entry in list(self.entries.items()):
+            if entry.session_key != session_key:
+                continue
+            del self.entries[clarify_id]
+            if not entry.resolved:
+                entry.response, entry.resolved = "", True
+                cancelled += 1
+        return cancelled
+
+
+CLARIFY = ClarifyGateway()
+
+
+# ----------------------------------------------------------------- gateway.run_turn_followup_ack
+
+
+def _followup_processing_hooks_apply(adapter: Any, event: Optional[MessageEvent]) -> bool:
+    """TRANSCRIBED VERBATIM (v2026.9.24 ``gateway/run_turn_followup_ack.py``, byte-identical
+    in 0.21.5): whether a message Hermes parked behind a running turn and drained
+    IN-BAND as a queued follow-up gets its lifecycle hooks at all (#2246).
+
+    🔴 Only for an adapter that OVERRIDES ``on_processing_start`` — Hermes brackets the two, so
+    an adapter defining the completion hook alone is never handed a follow-up's completion.
+    ``dev/hermes_contract.py`` checks the real one, inside the e2e runs' Hermes."""
+    if adapter is None or event is None:
+        return False
+    if not (getattr(event, "message_id", None) or getattr(event, "raw_message", None)):
+        return False
+    start_hook = getattr(type(adapter), "on_processing_start", None)
+    return start_hook is not None and start_hook is not BasePlatformAdapter.on_processing_start
+
+
+async def _run_followup_processing_hook(
+    adapter: Any, event: Optional[MessageEvent], hook_name: str, *args: Any
+) -> None:
+    """TRANSCRIBED VERBATIM: fire one lifecycle hook for a runner-drained follow-up."""
+    if not _followup_processing_hooks_apply(adapter, event):
+        return
+    run_hook = getattr(adapter, "_run_processing_hook", None)
+    if not callable(run_hook):
+        return
+    await run_hook(hook_name, event, *args)
+
+
 # --------------------------------------------------------------------------- installation
 
 
@@ -304,13 +471,27 @@ def _install() -> None:
     approval = types.ModuleType("tools.approval")
     approval.resolve_gateway_approval = APPROVALS.resolve_gateway_approval
     tools.approval = approval
+    clarify = types.ModuleType("tools.clarify_gateway")
+    for name in (
+        "resolve_gateway_clarify", "resolve_text_response_for_session", "mark_awaiting_text",
+        "has_pending", "clear_session",
+    ):
+        setattr(clarify, name, getattr(CLARIFY, name))
+    tools.clarify_gateway = clarify
+
+    followup = types.ModuleType("gateway.run_turn_followup_ack")
+    followup._followup_processing_hooks_apply = _followup_processing_hooks_apply
+    followup._run_followup_processing_hook = _run_followup_processing_hook
 
     gateway.config, gateway.session, gateway.platforms = config, session, platforms
+    gateway.run_turn_followup_ack = followup
     platforms.base, platforms.event = base, event
     for name, module in {
         "gateway": gateway, "gateway.config": config, "gateway.session": session,
+        "gateway.run_turn_followup_ack": followup,
         "gateway.platforms": platforms, "gateway.platforms.base": base,
         "gateway.platforms.event": event, "tools": tools, "tools.approval": approval,
+        "tools.clarify_gateway": clarify,
     }.items():
         sys.modules.setdefault(name, module)
 
@@ -328,6 +509,8 @@ def _empty_approval_queue():
     """The approval stand-in is a module global: every test starts with nothing pending."""
     APPROVALS.pending.clear()
     APPROVALS.resolved.clear()
+    CLARIFY.entries.clear()
+    CLARIFY.calls.clear()
     yield
 
 

@@ -1,0 +1,34 @@
+# Markdown lint and spelling for this project's documentation, against its own
+# committed `.markdownlint-cli2.jsonc` and `cspell.json`.
+#
+# 🔴 A SEPARATE job with its own Node, never part of the `check` entry: both
+# tools are Node programs, and Node on a uv project's check would end the
+# single-toolchain property that entry exists to prove. The tools are installed
+# by exact version here rather than through a `package.json`, so the project
+# gains no second manifest. The versions are the ones the documentation is
+# written against; a bump is a reviewed change, never a floating range.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Markdown and spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Markdown lint
+        run: npx --yes markdownlint-cli2@0.23.2 "**/*.md"
+      - name: Spelling
+        run: npx --yes cspell@10.0.1 --no-progress --config cspell.json "**/*.md"

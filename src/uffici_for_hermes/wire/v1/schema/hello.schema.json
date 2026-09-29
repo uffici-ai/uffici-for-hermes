@@ -64,6 +64,13 @@
           "minimum": 1,
           "maximum": 10000000,
           "description": "The harness's share of its window for platform content. The platform sizes to it with its own estimator; the companion never estimates."
+        },
+        "processId": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Optional. A nonce the plugin mints once per harness PROCESS and sends on every hello. The same id on a reconnect is the same process, still working on what it acknowledged; a different id is a restarted harness that holds nothing of the old one's turns, so the companion delivers what the old process had acknowledged again. Not a secret, and not an identity: a new one per process start. An older plugin that omits it keeps the old rule — acknowledged requests are never redelivered."
         }
       }
     },
@@ -87,6 +94,17 @@
         "orgSlug": {
           "type": "string",
           "maxLength": 64
+        },
+        "features": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "description": "Optional. What this companion can carry beyond the frames every v1 companion does, so a newer plugin never sends an older companion a field it would drop. `question`: a post may carry a question, which reaches the person as the question card. An absent list means none; a name the plugin does not know is ignored."
         }
       }
     }

@@ -79,6 +79,21 @@ def test_config_switches_the_platform_on() -> None:
     assert manifest["envPath"] == ["hermes", "config", "env-path"]
 
 
+def test_config_silences_hermess_own_chatter() -> None:
+    """Hermes sends its operational notices through the same hook as the agent's replies, so
+    on Uffici they would read as the agent speaking: the "⏳ Working" heartbeat (switchable
+    per platform) and the memory-review notice (switchable only for the whole Hermes; the
+    review still runs). The restart notice is switched off by the adapter itself.
+
+    🔴 Never ``display.background_process_notifications: off``: in Hermes that also stops
+    INJECTING a finished process into the agent's session, which is the agent's work, not
+    chatter."""
+    keys = {entry["key"]: entry["value"] for entry in _manifest()["config"]}
+    assert keys.get("display.platforms.uffici.long_running_notifications") == "false"
+    assert keys.get("display.memory_notifications") == "off"
+    assert "display.background_process_notifications" not in keys
+
+
 def test_manifest_carries_only_fields_the_companion_schema_knows() -> None:
     # The companion's schema is `additionalProperties: false`; this is its
     # field list, kept in step by hand and by the platform's parity guard.
@@ -88,3 +103,39 @@ def test_manifest_carries_only_fields_the_companion_schema_knows() -> None:
     }
     unknown = set(_manifest()) - known
     assert not unknown, f"fields the companion would refuse: {sorted(unknown)}"
+
+
+# ------------------------------------------------------------- the version it reports (#2236)
+
+
+def test_the_plugin_reports_the_version_its_release_stamped(tmp_path: Path) -> None:
+    """🔴 #2236: every release reported ``0.1.0`` — a constant — whatever was installed.
+
+    The release writes ``uffici-plugin.json``, with the tag's version, BESIDE the package
+    (the tarball's root is the package directory). That file is the one honest source.
+    """
+    from uffici_for_hermes.adapter import plugin_version
+
+    (tmp_path / "uffici-plugin.json").write_text(json.dumps({"version": "0.4.0"}))
+    assert plugin_version(tmp_path) == "0.4.0"
+
+
+def test_a_source_checkout_says_it_is_one(tmp_path: Path) -> None:
+    from uffici_for_hermes.adapter import DEV_VERSION, plugin_version
+
+    assert plugin_version(tmp_path) == DEV_VERSION
+    (tmp_path / "uffici-plugin.json").write_text("{not json")
+    assert plugin_version(tmp_path) == DEV_VERSION
+    (tmp_path / "uffici-plugin.json").write_text(json.dumps({"version": "x" * 65}))
+    assert plugin_version(tmp_path) == DEV_VERSION, "a version the wire refuses is not sent"
+    # The tracked placeholder is not a version either.
+    (tmp_path / "uffici-plugin.json").write_text(json.dumps({"version": "0.0.0"}))
+    assert plugin_version(tmp_path) == DEV_VERSION
+
+
+def test_the_release_writes_the_manifest_beside_the_package() -> None:
+    """What makes the lookup above find it: the Package step stages the PACKAGE directory
+    and writes the stamped manifest into that same directory."""
+    release = (PROJECT_ROOT / ".github" / "workflows" / "release.yml").read_text()
+    assert 'cp -R src/uffici_for_hermes/. "$stage/"' in release
+    assert '"$stage/uffici-plugin.json"' in release

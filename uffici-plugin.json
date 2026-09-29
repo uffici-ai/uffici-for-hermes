@@ -9,7 +9,9 @@
   "enable": ["hermes", "plugins", "enable", "uffici-for-hermes"],
   "configSet": ["hermes", "config", "set"],
   "config": [
-    { "key": "gateway.platforms.uffici.enabled", "value": "true" }
+    { "key": "gateway.platforms.uffici.enabled", "value": "true" },
+    { "key": "display.platforms.uffici.long_running_notifications", "value": "false" },
+    { "key": "display.memory_notifications", "value": "off" }
   ],
   "envPath": ["hermes", "config", "env-path"],
   "envFile": ".env",

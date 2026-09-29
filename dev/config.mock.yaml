@@ -26,7 +26,16 @@ gateway:
   platforms:
     uffici:
       enabled: true
+
+# Under `display`, where Hermes reads it — never `gateway` (#2193).
+display:
   busy_input_mode: interrupt
+  # The two chat notices `uffici setup` switches off, as the setup manifest writes them
+  # (`uffici-plugin.json`), so the rig's Hermes matches an installed one (#2247).
+  memory_notifications: "off"
+  platforms:
+    uffici:
+      long_running_notifications: false
 
 # 🔴 `approvals` is left at Hermes's own default, deliberately (#2164). When Hermes asks a
 # person to approve a command, the plugin answers DENY at once with a reason the agent
@@ -50,6 +59,14 @@ model:
   # Any name the mock will answer for; it echoes whatever it is asked.
   default: "mock-model"
   provider: "modelmock"
+  # 🔴 Hermes's OWN setting for a model its resolver cannot look up — the mock
+  # publishes no metadata. The plugin reads the window through Hermes, so the rig
+  # exercises exactly the path a real install takes; it never sets the plugin's
+  # override, which is what hid that path until a real machine met it.
+  # 🔴 At least 64,000: Hermes REFUSES a smaller window on every turn ("below the
+  # minimum 64,000 required"), and posts that error as the reply — 32,000 turned a
+  # whole CI run into errored turns that every `nonEmpty` expectation accepted.
+  context_length: 128000
 
 providers:
   modelmock:

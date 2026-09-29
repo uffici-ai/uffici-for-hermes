@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "post",
+  "requestId": "req_2c7f1e9a",
+  "text": "Which board?",
+  "question": {
+    "id": "clarify_7f3c9a1e",
+    "choices": [
+      "a"
+    ]
+  }
+}

@@ -17,7 +17,10 @@ and never carries an allowlist of its own.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+from pathlib import Path
 from typing import Any
 
 from gateway.config import Platform, PlatformConfig
@@ -43,8 +46,38 @@ logger = logging.getLogger(__name__)
 #: The platform's name, in `config.yaml`, in the registry and on the wire.
 PLATFORM_NAME = "uffici"
 
-#: This plugin's own version, sent in ``hello``.
-PLUGIN_VERSION = "0.1.0"
+#: How long the window probe may take — Hermes's resolver may ask a provider (#2230).
+WINDOW_PROBE_TIMEOUT_SECONDS = 60.0
+
+#: What a plugin that was not installed from a release says it is (#2236).
+DEV_VERSION = "0.0.0-dev"
+
+#: The release manifest, which the release writes beside this package with the tag's
+#: version stamped in (`.github/workflows/release.yml`, "Package").
+MANIFEST_NAME = "uffici-plugin.json"
+
+#: The wire's bound on `pluginVersion` (`hello.schema.json`).
+_VERSION_RE = re.compile(r"^\S{1,64}$")
+
+
+def plugin_version(package_dir: Path | None = None) -> str:
+    """This plugin's installed version, sent in ``hello`` (#2236).
+
+    🔴 Read from the release's own manifest, never a constant: every release reported
+    ``0.1.0`` while ``v0.3.0`` was installed, and an "out of date" notice built on that
+    would have been wrong for every agent. A source checkout has no stamped manifest
+    beside the package — the tracked one says ``0.0.0`` and sits at the project root —
+    and says so as :data:`DEV_VERSION`.
+    """
+    directory = package_dir if package_dir is not None else Path(__file__).resolve().parent
+    try:
+        stamped = json.loads((directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return DEV_VERSION
+    version = str(stamped.get("version") or "") if isinstance(stamped, dict) else ""
+    if version in ("", "0.0.0") or not _VERSION_RE.match(version):
+        return DEV_VERSION
+    return version
 
 #: 🔴 Every conversation is a ``dm``. Hermes keys a ``dm`` with a ``chat_id`` on
 #: that id alone, so one Uffici conversation is one Hermes session however many
@@ -145,6 +178,20 @@ APPROVAL_UNAVAILABLE_REASON = (
 #: from what was said this turn.
 OPENER_HEADER = "[Uffici] Earlier in this conversation:"
 
+#: The companion's word for "a post may carry a question" (#2232), in its hello.
+FEATURE_QUESTION = "question"
+
+#: What the wire admits for a question (`post.schema.json`): an id the answer can name,
+#: at most ten choices of at most 200 characters. A question outside these bounds is
+#: asked in plain text instead — never clipped, which would offer the person choices
+#: the harness did not.
+QUESTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
+QUESTION_MAX_CHOICES = 10
+QUESTION_CHOICE_MAX_CHARS = 200
+
+#: Who can answer a question: a person, never another agent or the platform.
+PERSON_AUTHORS = frozenset({"member", "correspondent"})
+
 
 class UfficiAdapter(BasePlatformAdapter):
     """One conversation service, many conversations, over one local wire."""
@@ -165,6 +212,15 @@ class UfficiAdapter(BasePlatformAdapter):
             config.extra = extra
         if isinstance(extra, dict):
             extra.setdefault("notice_delivery", "private")
+        # 🔴 Hermes's restart and shutdown notice ("⚠️ Hermes is restarting — your current task
+        # will be interrupted … send any message …") goes to every active chat through `send`, and
+        # landed in the conversation as the agent's own message (#2247) — telling the person
+        # to do what the platform already does, since it redelivers the request itself
+        # (#2234). Hermes gates it per platform, on this very config object (the runner
+        # hands its own `PlatformConfig` to the adapter). Forced, not defaulted: there is no
+        # reading of that notice that is right on Uffici, and Hermes's loader leaves no way
+        # to tell an operator's `true` from its own default.
+        config.gateway_restart_notification = False
         self._get_env = get_env or env_reader()
         self._connect_fn = connect_fn
         self._client: WireClient | None = None
@@ -204,6 +260,14 @@ class UfficiAdapter(BasePlatformAdapter):
         #: matched to their results by callId. Nothing calls it yet; its first
         #: consumer is conversation-scoped memory (stage 4).
         self._calls = CallClient(self._send)
+        #: What the attached companion can carry beyond every v1 companion (#2232).
+        self._companion_features: frozenset[str] = frozenset()
+        #: conversation id → the question a turn asked through the card and is waiting
+        #: on: Hermes's clarify id, its session key, and the request that asked (#2232).
+        self._pending_questions: dict[str, dict[str, str]] = {}
+        #: request that asked → request whose brief carried the answer. The turn that
+        #: asked keeps running after the answer, so its completion closes the LATER one.
+        self._continues: dict[str, str] = {}
 
     # ---------------------------------------------------------------- policy
 
@@ -220,13 +284,26 @@ class UfficiAdapter(BasePlatformAdapter):
         # brief is handled twice — two admits, two acks — while the orphaned
         # task reconnects for the life of the process.
         await self.disconnect()
+        import asyncio
+
         try:
             address = resolve_address(self._get_env)
             token = resolve_token(self._get_env)
-            budget = context_budget_tokens(
-                resolve_window_tokens(self._get_env, self._window_probes()),
-                resolve_share(self._get_env),
-            )
+            # 🔴 Off the event loop: Hermes's resolver may ask a provider over HTTP
+            # (#2230), and this coroutine runs on the gateway's own loop.
+            try:
+                window = await asyncio.wait_for(
+                    asyncio.to_thread(resolve_window_tokens, self._get_env, self._window_probes()),
+                    WINDOW_PROBE_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as exc:
+                # Hermes's resolver can ask a provider; one that hangs costs a retry of the
+                # connect, never a gateway start that waits for ever.
+                raise BudgetUnavailable(
+                    "Hermes did not report its context window in time; the next connect "
+                    "asks again"
+                ) from exc
+            budget = context_budget_tokens(window, resolve_share(self._get_env))
         except (WireConfigError, BudgetUnavailable) as exc:
             # The message names what is missing and how to supply it, and carries
             # no path and no token: these refusals are read from a log.
@@ -237,7 +314,7 @@ class UfficiAdapter(BasePlatformAdapter):
             address=address,
             token=token,
             harness_version=self._harness_version(),
-            plugin_version=PLUGIN_VERSION,
+            plugin_version=plugin_version(),
             budget_tokens=budget,
             connect_fn=self._connect_fn or _default_connect,
             on_frame=self._on_frame,
@@ -263,13 +340,17 @@ class UfficiAdapter(BasePlatformAdapter):
         self._runner = _spawn(self._client.run())
         return True
 
-    async def _on_companion_hello(self, _frame: dict[str, Any]) -> None:
+    async def _on_companion_hello(self, frame: dict[str, Any]) -> None:
         """The wire is up. Announce readiness once the harness can answer.
 
         🔴 On its own task, because this runs inside the client's read loop —
         waiting here would stop the plugin reading the very frames it is about
         to ask for.
         """
+        features = frame.get("features") if isinstance(frame, dict) else None
+        self._companion_features = frozenset(
+            str(name) for name in (features or []) if isinstance(name, str)
+        )
         runner, self._ready_runner = self._ready_runner, None
         if runner is not None:
             runner.cancel()
@@ -334,6 +415,11 @@ class UfficiAdapter(BasePlatformAdapter):
                 await client.stop()
 
     async def disconnect(self) -> None:
+        # 🔴 A question waiting on the card holds its Hermes turn (#2232 review): forgetting
+        # it here without releasing it would leave that turn blocked, holding the session,
+        # until Hermes's own clarify timeout.
+        for pending in list(self._pending_questions.values()):
+            self._release_questions(pending["sessionKey"])
         if self._client is not None:
             await self._client.stop()
         self._client = None
@@ -363,6 +449,8 @@ class UfficiAdapter(BasePlatformAdapter):
             task.cancel()
         self._settling.clear()
         self._settling_outcome.clear()
+        self._pending_questions.clear()
+        self._continues.clear()
         self._calls.fail_all()
 
     def _harness_version(self) -> str:
@@ -382,6 +470,42 @@ class UfficiAdapter(BasePlatformAdapter):
         fallback. What must never happen is this plugin inventing a window.
         """
 
+        def from_hermes_config() -> int | None:
+            """🔴 The window Hermes itself compacts against (#2230).
+
+            Hermes's OWN configuration names the model, and its own resolver answers
+            for it — the same call its agent makes at start. The two probes below read
+            the model from the gateway's session-store config, which carries none, so
+            on a real install neither ever asked and the plugin refused to start.
+            """
+            from agent.model_metadata import get_model_context_length  # type: ignore
+            from hermes_cli import config as hermes_config  # type: ignore
+
+            # The read-only loader where Hermes has one (it skips a deep copy): this
+            # probe only reads, and never mutates what it is handed.
+            load = getattr(hermes_config, "load_config_readonly", None) or hermes_config.load_config
+            section = (load() or {}).get("model")
+            if isinstance(section, str):
+                model, section = section, {}
+            elif isinstance(section, dict):
+                model = section.get("default") or section.get("model")
+            else:
+                return None
+            if not model:
+                return None
+            configured = section.get("context_length")
+            try:
+                configured = int(configured) if configured is not None else None
+            except (TypeError, ValueError):
+                # Hermes warns and auto-detects on the same value; so does this.
+                configured = None
+            return get_model_context_length(
+                str(model),
+                base_url=str(section.get("base_url") or ""),
+                config_context_length=configured,
+                provider=str(section.get("provider") or ""),
+            )
+
         def from_session_store() -> int | None:
             store = getattr(self, "_session_store", None)
             config = getattr(store, "config", None)
@@ -400,7 +524,7 @@ class UfficiAdapter(BasePlatformAdapter):
             base_url = getattr(config, "base_url", "") or ""
             return get_cached_context_length(model, base_url) if model else None
 
-        return (from_session_store, from_agent_defaults)
+        return (from_hermes_config, from_session_store, from_agent_defaults)
 
     # ---------------------------------------------------------------- outbound
 
@@ -423,6 +547,110 @@ class UfficiAdapter(BasePlatformAdapter):
         logger.info(
             "uffici: a Hermes platform notice was not posted (%d chars)",
             len(content or ""),
+            extra={"conversationId": str(chat_id)},
+        )
+        return SendResult(success=True)
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: list[str] | None,
+        clarify_id: str,
+        session_key: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """Hermes's ``clarify`` becomes the platform's question card (#2232).
+
+        🔴 Posted with the question, then the request is SETTLED at once: the person sees
+        the card instead of a working line, and the request's deadline no longer runs
+        against a turn that is waiting on them. The turn that asked stays blocked in
+        Hermes's clarify; the person's answer arrives as the next brief and resolves it
+        (``_answer_pending_question``), and that turn's replies then go to the request
+        which carried the answer.
+
+        Hermes's own text fallback — a numbered list and its text intercept — is used
+        when the companion cannot carry a question (an older one), when the question does
+        not fit the wire's bounds, or when nothing is open to ask on.
+        """
+        conversation_id = str(chat_id)
+        request_id = self._open_request.get(conversation_id)
+        card = _question_card(question, choices, clarify_id, self._is_multi_select(clarify_id))
+        if (
+            request_id is None
+            or card is None
+            or FEATURE_QUESTION not in self._companion_features
+        ):
+            return await BasePlatformAdapter.send_clarify(
+                self, chat_id, question, choices, clarify_id, session_key, metadata
+            )
+
+        text, offered = card
+        if not await self._send(
+            {"v": 1, "type": "post", "requestId": request_id, "text": text, "question": offered}
+        ):
+            # A failure sends Hermes to its plain-text retry, which is the right fallback.
+            return SendResult(success=False, error="the wire dropped the question")
+        self._posts[request_id] = self._posts.get(request_id, 0) + 1
+        self._pending_questions[conversation_id] = {
+            "clarifyId": str(clarify_id),
+            "sessionKey": str(session_key or self._session_key_of.get(request_id, "")),
+            "askedBy": request_id,
+        }
+        await self._send({"v": 1, "type": "done", "requestId": request_id, "outcome": "answered"})
+        self._forget(request_id)
+        logger.info(
+            "uffici: request %s asked a question on the card (%d choice(s)) and was settled",
+            request_id, len(offered["choices"]),
+            extra={"requestId": request_id, "conversationId": conversation_id},
+        )
+        return SendResult(success=True, message_id=request_id)
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str | None = None) -> None:
+        """Hermes gave up on a question without an answer — its timeout, a reset (#2232).
+
+        The pending question is forgotten, so the person's next message reaches the
+        agent as an ordinary turn. The notice is Hermes's own text and is not posted.
+        """
+        for conversation_id, pending in list(self._pending_questions.items()):
+            if pending.get("clarifyId") == str(clarify_id):
+                del self._pending_questions[conversation_id]
+                logger.info(
+                    "uffici: a question on conversation %s ended without an answer",
+                    conversation_id, extra={"conversationId": conversation_id},
+                )
+
+    def _is_multi_select(self, clarify_id: str) -> bool:
+        """Whether Hermes asked for several choices — read where its base adapter reads it."""
+        try:
+            from tools import clarify_gateway  # type: ignore[import-not-found]
+
+            with clarify_gateway._lock:  # noqa: SLF001 — Hermes's own base adapter reads it so
+                entry = clarify_gateway._entries.get(clarify_id)  # noqa: SLF001
+            return bool(getattr(entry, "multi_select", False))
+        except Exception:  # noqa: BLE001 — a moved internal asks a single-choice question
+            return False
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """A Hermes status line is NOT posted (#2233).
+
+        Hermes routes its own progress lines here when the adapter has this hook, and
+        through plain ``send`` otherwise — which made every "⏳ still waiting" line a post
+        by the agent, every fifteen seconds, and let those posts count as the agent
+        answering, so the platform's "did not answer" note never fired. A status is Hermes
+        talking about itself; the person's view of a working agent is the platform's own
+        working line. Logged by key and length only, and SUCCESS is answered, because a
+        failure would send Hermes back to ``send``.
+        """
+        logger.debug(
+            "uffici: a Hermes status line was not posted (%s, %d chars)",
+            str(status_key), len(content or ""),
             extra={"conversationId": str(chat_id)},
         )
         return SendResult(success=True)
@@ -530,6 +758,18 @@ class UfficiAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"id": str(chat_id), "type": CHAT_TYPE, "platform": PLATFORM_NAME}
 
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Nothing to do when a turn starts — but the override itself is load-bearing.
+
+        🔴 A brief that lands on a BUSY session (Hermes's own startup auto-resume after a
+        restart, a goal continuation, a cron wake-up) is parked and drained IN-BAND as a
+        queued follow-up, and that drain fires the lifecycle hooks only for an adapter
+        that overrides THIS hook (``gateway/run_turn_followup_ack.py``,
+        ``_followup_processing_hooks_apply`` — Hermes brackets start and complete). Without
+        it the follow-up's completion never reached ``on_processing_complete``, and an
+        answered request sat open until the platform's deadline cancelled it (#2246).
+        """
+
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
@@ -542,6 +782,10 @@ class UfficiAdapter(BasePlatformAdapter):
         request_id = str((event.metadata or {}).get("uffici_request_id") or "")
         if not request_id:
             return
+        # 🔴 A turn that asked a question on the card settled its own request and was
+        # answered on a later one (#2232): its end closes THAT request.
+        while request_id in self._continues:
+            request_id = self._continues.pop(request_id)
         if request_id in self._closed:
             # Already terminal here: a cancel closed it, or the harness refused
             # it after the ack. The companion has moved on.
@@ -660,6 +904,8 @@ class UfficiAdapter(BasePlatformAdapter):
             return
 
         delta = frame.get("delta") or []
+        if await self._answer_pending_question(frame, request_id, conversation_id, delta):
+            return
         author = cause_author(frame.get("cause"), delta)
         source = self.build_source(
             chat_id=conversation_id,
@@ -745,6 +991,69 @@ class UfficiAdapter(BasePlatformAdapter):
         )
         await self._admit(event, request_id)
 
+    async def _answer_pending_question(
+        self, frame: dict[str, Any], request_id: str, conversation_id: str, delta: list
+    ) -> bool:
+        """Whether this brief answered the question a turn is waiting on (#2232).
+
+        🔴 The answer is NOT a new turn. The turn that asked is still running, blocked in
+        Hermes's clarify; a second turn on the same conversation would queue behind it
+        and answer a conversation the first had not finished. So the person's words
+        resolve the clarify — a number or a label picks a choice, anything else is the
+        free "Other" answer — and the running turn carries on, speaking on THIS request.
+        A brief in which no person spoke, a reset, or a question Hermes has already given
+        up on is an ordinary turn.
+        """
+        pending = self._pending_questions.get(conversation_id)
+        if pending is None:
+            return False
+        if frame.get("resetSession"):
+            self._pending_questions.pop(conversation_id, None)
+            self._release_questions(pending["sessionKey"])
+            return False
+        answer = _person_answer(delta)
+        if answer is None:
+            # 🔴 Nobody the question was put to has spoken — another agent's mention, a card
+            # arrival. Queued behind the turn blocked in clarify it would expire, and its
+            # cancel would end the person's question. Closed `cancelled` at once instead:
+            # that leaves the offset, so the ring that brings the answer re-covers it.
+            await self._send(
+                {"v": 1, "type": "ack", "requestId": request_id,
+                 "outcome": "accepted", "session": "resumed"}
+            )
+            await self._send(
+                {"v": 1, "type": "done", "requestId": request_id, "outcome": "cancelled"}
+            )
+            self._forget(request_id)
+            logger.info(
+                "uffici: brief %s was held — the agent is waiting on a person's answer",
+                request_id, extra={"requestId": request_id, "conversationId": conversation_id},
+            )
+            return True
+        if len([e for e in delta if isinstance(e, dict)]) > 1:
+            # 🔴 More than the answer arrived: all of it is what the waiting turn reads, so
+            # nothing a person wrote beside it is dropped (the offset moves past it).
+            answer = render_entries(delta)
+        self._pending_questions.pop(conversation_id, None)
+        if not _resolve_question(pending, answer):
+            return False
+
+        self._continues[pending["askedBy"]] = request_id
+        self._conversation_of[request_id] = conversation_id
+        self._session_key_of[request_id] = pending["sessionKey"]
+        self._open_request[conversation_id] = request_id
+        self._posts.setdefault(request_id, 0)
+        await self._send(
+            {"v": 1, "type": "ack", "requestId": request_id,
+             "outcome": "accepted", "session": "resumed"}
+        )
+        logger.info(
+            "uffici: brief %s answered the question request %s asked; the turn carries on",
+            request_id, pending["askedBy"],
+            extra={"requestId": request_id, "conversationId": conversation_id},
+        )
+        return True
+
     async def _on_opener(self, frame: dict[str, Any]) -> None:
         request_id = str(frame.get("requestId") or "")
         held = self._awaiting_opener.pop(request_id, None)
@@ -819,9 +1128,27 @@ class UfficiAdapter(BasePlatformAdapter):
         conversation_id = self._conversation_of.get(request_id)
         self._awaiting_opener.pop(request_id, None)
         if conversation_id is None:
+            # 🔴 A request this plugin already SETTLED — the one that asked on the card —
+            # can still be cancelled: its question post failed upstream (the platform had
+            # expired it, a 5xx), and the companion withdraws it. Its question must not
+            # linger: the turn would hold Hermes's session, and the person's next message
+            # would be taken as the answer to a card they never saw.
+            for asked_on, pending in list(self._pending_questions.items()):
+                if pending.get("askedBy") == request_id:
+                    del self._pending_questions[asked_on]
+                    self._release_questions(pending["sessionKey"])
             return
 
         source = self.build_source(chat_id=conversation_id, chat_type=CHAT_TYPE)
+        # 🔴 A turn waiting on a question ignores `/stop` (#2233): Hermes's clarify wait
+        # returns only on an answer, its timeout or `clear_session`, and its gateway leaves
+        # a pending clarify in place for a slash command. The blocked turn kept Hermes's
+        # session lease, and the next turn waited behind it past its request's deadline.
+        # So the question is released FIRST; then the stop takes.
+        self._pending_questions.pop(conversation_id, None)
+        self._release_questions(
+            self._session_key_of.get(request_id) or self._session_key_for(source)
+        )
         stop = MessageEvent(
             text="/stop",
             message_type=MessageType.COMMAND,
@@ -841,10 +1168,37 @@ class UfficiAdapter(BasePlatformAdapter):
 
     # ---------------------------------------------------------------- helpers
 
+    def _release_questions(self, session_key: str) -> int:
+        """Answer every question pending on a session with nothing, so its turn can end.
+
+        Best-effort: a Hermes whose clarify store has moved costs today's behaviour —
+        the stop alone — and never the cancel.
+        """
+        if not session_key:
+            return 0
+        try:
+            from tools.clarify_gateway import clear_session  # type: ignore[import-not-found]
+
+            released = int(clear_session(session_key) or 0)
+        except Exception as exc:  # noqa: BLE001 — a moved internal is a fallback
+            logger.warning(
+                "uffici: a pending question could not be released (%s); the stop may wait "
+                "for Hermes's own timeout", type(exc).__name__,
+            )
+            return 0
+        if released:
+            logger.info("uffici: released %d pending question(s) so the stop can take", released)
+        return released
+
     def _forget(self, request_id: str) -> None:
         # Remembered as closed, bounded, so a late lifecycle hook for it is a
         # no-op rather than a second terminal frame.
         self._closed[request_id] = None
+        # A continuation into a request that is over leads nowhere (#2232): bounded by the
+        # requests still open, never by the life of the process.
+        for asked, answering in list(self._continues.items()):
+            if answering == request_id:
+                del self._continues[asked]
         if len(self._closed) > CLOSED_MEMORY:
             del self._closed[next(iter(self._closed))]
         conversation_id = self._conversation_of.pop(request_id, None)
@@ -954,6 +1308,63 @@ class UfficiAdapter(BasePlatformAdapter):
             reset(build_session_key(source))
         except Exception as exc:  # noqa: BLE001
             logger.warning("uffici: resetting the session failed (%s)", type(exc).__name__)
+
+
+def _question_card(
+    question: str, choices: list[str] | None, clarify_id: str, multi_select: bool
+) -> tuple[str, dict[str, Any]] | None:
+    """The question as the wire carries it, or ``None`` when the wire cannot (#2232)."""
+    text = (question or "").strip()
+    if not text or not QUESTION_ID_RE.match(str(clarify_id or "")):
+        return None
+    offered = [str(choice).strip() for choice in (choices or [])]
+    if (
+        len(offered) > QUESTION_MAX_CHOICES
+        or any(not choice or _utf16_len(choice) > QUESTION_CHOICE_MAX_CHARS for choice in offered)
+    ):
+        return None
+    return text[:POST_TEXT_MAX], {
+        "id": str(clarify_id),
+        "choices": offered,
+        "multiSelect": bool(multi_select) and bool(offered),
+    }
+
+
+def _utf16_len(text: str) -> int:
+    """Length as the platform's schemas count it: UTF-16 units, not code points."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _person_answer(delta: list) -> str | None:
+    """The last thing a PERSON said in a delta — what answers a question."""
+    for entry in reversed(delta or []):
+        if not isinstance(entry, dict):
+            continue
+        author = entry.get("author") if isinstance(entry.get("author"), dict) else {}
+        text = str(entry.get("text") or "").strip()
+        if author.get("type") in PERSON_AUTHORS and entry.get("kind") == "message" and text:
+            return text
+    return None
+
+
+def _resolve_question(pending: dict[str, str], answer: str) -> bool:
+    """Hand Hermes the answer: its own coercion first (a number, a label, a list for a
+    multi-select), then the words as they are — the free answer. Best-effort: a moved
+    internal answers False, and the brief becomes an ordinary turn."""
+    try:
+        from tools.clarify_gateway import (  # type: ignore[import-not-found]
+            resolve_gateway_clarify,
+            resolve_text_response_for_session,
+        )
+
+        if resolve_text_response_for_session(pending["sessionKey"], answer):
+            return True
+        return bool(resolve_gateway_clarify(pending["clarifyId"], answer))
+    except Exception as exc:  # noqa: BLE001 — a moved internal is a fallback
+        logger.warning(
+            "uffici: a question could not be answered in Hermes (%s)", type(exc).__name__
+        )
+        return False
 
 
 async def _default_connect(address: Any) -> Any:  # pragma: no cover - needs a real socket

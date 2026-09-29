@@ -8,10 +8,13 @@ import json
 import pytest
 
 from conftest import (
+    CLARIFY,
     MessageType,
     PlatformConfig,
     ProcessingOutcome,
     SessionSource,
+    _followup_processing_hooks_apply,
+    _run_followup_processing_hook,
     build_session_key,
 )
 from uffici_for_hermes import adapter as adapter_module
@@ -555,6 +558,20 @@ def test_an_operator_choice_of_notice_delivery_is_kept() -> None:
     assert adapter.config.extra["notice_delivery"] == "public"
 
 
+def test_hermess_restart_notice_is_switched_off_for_uffici() -> None:
+    """#2247: "⚠️ Hermes is restarting — … send any message …" reached the conversation as
+    the agent's message. Hermes gates it per platform on the config the adapter is handed,
+    and the adapter turns it off — even over an explicit ``true``, which Hermes's loader
+    cannot tell from its own default."""
+    config = PlatformConfig(enabled=True)
+    assert config.gateway_restart_notification is True
+    UfficiAdapter(config)
+    assert config.gateway_restart_notification is False
+    explicit = PlatformConfig(enabled=True, gateway_restart_notification=True)
+    UfficiAdapter(explicit)
+    assert explicit.gateway_restart_notification is False
+
+
 # --------------------------------------------------------------------------- cancel
 
 
@@ -595,6 +612,94 @@ def test_a_failed_cancel_stops_the_turn_and_logs_only_the_class(caplog) -> None:
         assert "could not be delivered" not in caplog.text
 
     run(scenario())
+
+
+def test_a_cancel_releases_a_pending_question_before_the_stop() -> None:
+    """🔴 #2233: a turn waiting in ``clarify`` ignores ``/stop``.
+
+    Hermes's clarify wait returns only on a resolve, its timeout (an hour by default) or
+    ``clear_session``, and its gateway deliberately leaves a pending clarify in place for
+    a slash command. So the cancelled turn stayed blocked, holding Hermes's durable
+    session lease, and the next turn on the conversation waited behind it far past its
+    request's deadline. Releasing the question FIRST is what lets the stop take.
+    """
+
+    async def scenario():
+        adapter, _ = build(FakeStore())
+        brief = golden("brief")
+        await adapter._on_frame(brief)
+        await adapter._on_frame(golden("opener"))
+        session_key = adapter._session_key_of[brief["requestId"]]
+        CLARIFY.register("clarify_1", session_key, "Which board?", ["Uffici", "Trello"])
+
+        stops_while_pending: list[bool] = []
+        admit = adapter.handle_message
+
+        async def handle(event):
+            stops_while_pending.append(CLARIFY.has_pending(session_key))
+            return await admit(event)
+
+        adapter.handle_message = handle
+        await adapter._on_frame({**golden("cancel-superseded"), "requestId": brief["requestId"]})
+
+        assert ("clear_session", session_key) in CLARIFY.calls
+        assert adapter.handled[-1].text == "/stop"
+        assert stops_while_pending == [False], (
+            "the stop was sent while the question still held the turn"
+        )
+
+    run(scenario())
+
+
+def test_a_cancel_with_no_pending_question_still_stops() -> None:
+    async def scenario():
+        adapter, _ = build(FakeStore())
+        await adapter._on_frame(golden("brief"))
+        await adapter._on_frame(golden("opener"))
+        await adapter._on_frame(golden("cancel-superseded"))
+        assert adapter.handled[-1].text == "/stop"
+
+    run(scenario())
+
+
+def test_a_status_line_is_never_a_post() -> None:
+    """🔴 #2233: Hermes talking about itself is not the agent speaking.
+
+    Hermes routes its status lines ("⏳ Still waiting for the other Hermes process…")
+    to ``send_or_update_status`` when the adapter has one and to plain ``send``
+    otherwise. Without it every line became a post on the open request — a wall of
+    them, every fifteen seconds — and the posts counted as the agent answering, so the
+    platform's "did not answer" note never fired when the request then expired.
+    """
+
+    async def scenario():
+        adapter, wire = build(FakeStore())
+        brief = golden("brief")
+        await adapter._on_frame(brief)
+        await adapter._on_frame(golden("opener"))
+
+        result = await adapter.send_or_update_status(
+            brief["conversationId"], "lease_wait",
+            "⏳ Still waiting for the other Hermes process on this session (15s)...",
+            metadata=None,
+        )
+
+        assert result.success is True, "a failure would send Hermes back to plain send"
+        assert wire.of_type("post") == []
+        assert adapter._posts.get(brief["requestId"], 0) == 0
+
+    run(scenario())
+
+
+def test_a_status_line_is_logged_by_key_and_length_only(caplog) -> None:
+    async def scenario():
+        adapter, _ = build(FakeStore())
+        with caplog.at_level("DEBUG"):
+            await adapter.send_or_update_status("conv_1", "lease_wait", "waiting on /home/x/secret")
+
+    run(scenario())
+    assert "lease_wait" in caplog.text
+    assert "secret" not in caplog.text
 
 
 def test_a_cancel_for_an_unknown_request_does_nothing() -> None:
@@ -1088,6 +1193,51 @@ def test_ready_waits_for_the_startup_restore() -> None:
     assert adapter.harness_is_ready() is True
 
 
+def test_a_brief_hermes_drains_as_a_queued_follow_up_still_closes() -> None:
+    """🔴 THE RESTART THAT NEVER CLOSED (#2246).
+
+    After a restart Hermes auto-resumes the interrupted turn itself, so the redelivered
+    brief lands on a BUSY session: Hermes parks it and drains it IN-BAND as a queued
+    follow-up, never through the base adapter's own processing path. That drain fires the
+    lifecycle hooks only for an adapter that overrides ``on_processing_start``
+    (``_followup_processing_hooks_apply``). Without one the completion never came, and
+    the answered request sat open until the platform's deadline cancelled it."""
+
+    async def scenario():
+        zero_windows()
+        adapter, wire = build(FakeStore({SESSION}))
+        adapter._active_sessions, adapter._pending_messages = {}, {}
+        adapter.gateway_runner = FakeRunner(running={SESSION})
+        await adapter._on_frame(golden("brief"))
+        parked = adapter.handled[0]
+
+        # Hermes's drain, in its order: start, the follow-up's turn, complete.
+        await _run_followup_processing_hook(adapter, parked, "on_processing_start")
+        assert (await adapter.send("conv_01J8ZQ7X4K2M9P0Q", "the invoice is paid")).success
+        await _run_followup_processing_hook(
+            adapter, parked, "on_processing_complete", ProcessingOutcome.SUCCESS
+        )
+        adapter.gateway_runner = FakeRunner()
+        await spin()
+        assert [f["outcome"] for f in wire.of_type("done")] == ["answered"]
+
+    run(scenario())
+
+
+def test_every_brief_qualifies_for_hermess_follow_up_hooks() -> None:
+    """Both halves of Hermes's rule, stated where they can drift: the adapter overrides the
+    start hook, and the event it hands over carries a ``message_id`` (#2246)."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        await adapter._on_frame(golden("brief"))
+        return adapter, adapter.handled[0]
+
+    adapter, event = run(scenario())
+    assert event.message_id
+    assert _followup_processing_hooks_apply(adapter, event) is True
+
+
 def test_a_superseded_request_stops_waiting_on_the_new_turn() -> None:
     """The busy state after a supersede is the NEW turn's; the old request must not wait
     on it, or it closes only when the whole conversation goes quiet."""
@@ -1141,3 +1291,247 @@ def test_an_approval_without_a_session_key_uses_the_conversations_request() -> N
         assert APPROVALS.pending[SESSION] == [], "an empty key left the agent waiting"
 
     run(scenario())
+
+
+# --------------------------------------------------------------------------- questions (#2232)
+
+QUESTION_HELLO = {"v": 1, "type": "hello", "companionVersion": "0.4.0", "features": ["question"]}
+
+
+def answer_brief(text: str, request_id: str = "req_answer", **over) -> dict:
+    """The next brief on the conversation: a member's reply, as the platform sends it."""
+    base = golden("brief")
+    return {
+        **base,
+        "requestId": request_id,
+        "delta": [
+            {
+                "id": "entry_9", "cursor": "c0009", "at": "2026-09-17T14:05:00Z",
+                "author": {
+                    "type": "member", "id": "member_2", "label": "Ana Marques", "self": False,
+                },
+                "kind": "message", "text": text,
+            }
+        ],
+        **over,
+    }
+
+
+async def asked(features: bool = True, choices=("Uffici board", "Trello")):
+    """A turn on the brief's conversation that has asked a question through Hermes."""
+    adapter, wire = build(FakeStore())
+    if features:
+        await adapter._on_companion_hello(QUESTION_HELLO)
+    brief = golden("brief")
+    await adapter._on_frame(brief)
+    await adapter._on_frame(golden("opener"))
+    session_key = adapter._session_key_of[brief["requestId"]]
+    CLARIFY.register("clarify_1", session_key, "Which board?", list(choices) if choices else None)
+    result = await adapter.send_clarify(
+        brief["conversationId"], "Which board?", list(choices) if choices else None,
+        "clarify_1", session_key,
+    )
+    return adapter, wire, brief, session_key, result
+
+
+def test_a_question_reaches_the_person_as_the_card_and_settles_the_request() -> None:
+    """🔴 #2232: Hermes's clarify was a numbered list typed back by hand.
+
+    With a companion that can carry one, the question is a post WITH the question — the
+    card — and the request is settled at once: the person sees the card rather than a
+    working line, and the deadline no longer runs against a turn that is waiting on them.
+    """
+
+    async def scenario():
+        adapter, wire, brief, _, result = await asked()
+        assert result.success is True, "a failure would send Hermes to its text fallback"
+        posts = wire.of_type("post")
+        assert posts == [
+            {
+                "v": 1, "type": "post", "requestId": brief["requestId"], "text": "Which board?",
+                "question": {"id": "clarify_1", "choices": ["Uffici board", "Trello"],
+                             "multiSelect": False},
+            }
+        ]
+        assert wire.of_type("done") == [
+            {"v": 1, "type": "done", "requestId": brief["requestId"], "outcome": "answered"}
+        ]
+        assert ("mark_awaiting_text", "clarify_1") not in CLARIFY.calls
+        pending = adapter._pending_questions[brief["conversationId"]]
+        assert CLARIFY.has_pending(pending["sessionKey"])
+
+    run(scenario())
+
+
+def test_an_older_companion_gets_hermess_own_text_fallback() -> None:
+    async def scenario():
+        _, wire, brief, _, result = await asked(features=False)
+        assert result.success is True
+        [post] = wire.of_type("post")
+        assert "question" not in post
+        assert post["text"].startswith("❓ Which board?")
+        assert wire.of_type("done") == [], "the text fallback waits on the open request"
+        assert ("mark_awaiting_text", "clarify_1") in CLARIFY.calls
+
+    run(scenario())
+
+
+def test_the_answer_resolves_the_question_rather_than_starting_a_new_turn() -> None:
+    """The person's answer arrives as the next brief. The turn that asked is still running,
+    blocked in Hermes's clarify; the answer unblocks it, and a second turn would answer a
+    conversation the first had not finished."""
+
+    async def scenario():
+        adapter, wire, brief, session_key, _ = await asked()
+        handled_before = len(adapter.handled)
+        await adapter._on_frame(answer_brief("Trello"))
+
+        assert CLARIFY.entries["clarify_1"].response == "Trello"
+        assert len(adapter.handled) == handled_before, "the answer became a new Hermes turn"
+        assert wire.of_type("ack")[-1] == {
+            "v": 1, "type": "ack", "requestId": "req_answer",
+            "outcome": "accepted", "session": "resumed",
+        }
+        # The continuing turn speaks on the request that carried the answer.
+        assert adapter._open_request[brief["conversationId"]] == "req_answer"
+        assert adapter._session_key_of["req_answer"] == session_key
+        await adapter.send(brief["conversationId"], "Here is the Trello board.")
+        assert wire.of_type("post")[-1]["requestId"] == "req_answer"
+
+    run(scenario())
+
+
+def test_the_turn_that_asked_closes_the_request_that_answered() -> None:
+    async def scenario():
+        adapter, wire, brief, _, _ = await asked()
+        original = adapter.handled[-1]
+        await adapter._on_frame(answer_brief("Trello"))
+        await adapter.send(brief["conversationId"], "Done.")
+        await adapter.on_processing_complete(original, ProcessingOutcome.SUCCESS)
+        await settle(adapter)
+        assert wire.of_type("done")[-1] == {
+            "v": 1, "type": "done", "requestId": "req_answer", "outcome": "answered"
+        }
+
+    run(scenario())
+
+
+def test_a_number_picks_the_choice_and_free_text_is_the_other_answer() -> None:
+    async def scenario():
+        adapter, _, _, _, _ = await asked()
+        await adapter._on_frame(answer_brief("2"))
+        assert CLARIFY.entries["clarify_1"].response == "Trello"
+
+    run(scenario())
+
+    async def other():
+        adapter, _, _, _, _ = await asked()
+        await adapter._on_frame(answer_brief("the one Bruno made yesterday"))
+        # "Other" on the card: not a choice, still the answer.
+        assert CLARIFY.entries["clarify_1"].response == "the one Bruno made yesterday"
+
+    run(other())
+
+
+def test_a_question_hermes_already_gave_up_on_leaves_the_answer_an_ordinary_turn() -> None:
+    async def scenario():
+        adapter, _, _, session_key, _ = await asked()
+        CLARIFY.clear_session(session_key)  # Hermes's own timeout, or a /new
+        handled_before = len(adapter.handled)
+        await adapter._on_frame(answer_brief("Trello"))
+        await adapter._on_frame({**golden("opener"), "requestId": "req_answer"})
+        assert len(adapter.handled) == handled_before + 1
+
+    run(scenario())
+
+
+def test_a_question_the_card_cannot_carry_falls_back_to_text() -> None:
+    """An id outside the wire's alphabet would close the connection as malformed — so it
+    never reaches the wire as a card."""
+
+    async def scenario():
+        adapter, wire = build(FakeStore())
+        await adapter._on_companion_hello(QUESTION_HELLO)
+        brief = golden("brief")
+        await adapter._on_frame(brief)
+        await adapter._on_frame(golden("opener"))
+        key = adapter._session_key_of[brief["requestId"]]
+        CLARIFY.register("id with spaces", key, "Which?", ["a", "b"])
+        await adapter.send_clarify(
+            brief["conversationId"], "Which?", ["a", "b"], "id with spaces", key
+        )
+        [post] = wire.of_type("post")
+        assert "question" not in post
+
+    run(scenario())
+
+
+def test_a_question_whose_post_failed_upstream_is_released_by_its_cancel() -> None:
+    """Review of #2232: the post can fail AFTER the plugin settled the request — the
+    platform expired it, a 5xx — and the companion then sends `cancel{failed}` for a
+    request the plugin already forgot. The question must not linger: Hermes's turn would
+    hold the session, and the person's next "hello?" would be taken as the answer."""
+
+    async def scenario():
+        adapter, _, brief, session_key, _ = await asked()
+        await adapter._on_frame({**golden("cancel-failed"), "requestId": brief["requestId"]})
+        assert ("clear_session", session_key) in CLARIFY.calls
+        assert adapter._pending_questions == {}
+
+    run(scenario())
+
+
+def test_a_disconnect_releases_every_question_in_hermes() -> None:
+    async def scenario():
+        adapter, _, _, session_key, _ = await asked()
+        await adapter.disconnect()
+        assert ("clear_session", session_key) in CLARIFY.calls
+
+    run(scenario())
+
+
+def test_an_answer_that_arrives_with_more_brings_all_of_it_to_the_agent() -> None:
+    """Nothing in the answering brief is dropped: with more than the answer in it, the
+    whole delta, labelled, is the answer the waiting turn reads."""
+
+    async def scenario():
+        adapter, _, _, _, _ = await asked()
+        brief = answer_brief("Trello")
+        earlier = {**brief["delta"][0], "id": "entry_8", "text": "also add the budget"}
+        brief["delta"].insert(0, earlier)
+        await adapter._on_frame(brief)
+        response = CLARIFY.entries["clarify_1"].response
+        assert "also add the budget" in response and "Trello" in response
+
+    run(scenario())
+
+
+def test_while_a_card_question_waits_a_brief_no_person_spoke_in_is_held_not_queued() -> None:
+    """A mention by another agent, a card arrival: queued behind the turn blocked in
+    clarify, it would expire, and its cancel would end the person's question. It is closed
+    `cancelled` at once instead — which leaves the offset, so the answer's ring re-covers it."""
+
+    async def scenario():
+        adapter, wire, _, session_key, _ = await asked()
+        brief = answer_brief("I can take it", request_id="req_agent")
+        brief["delta"][0]["author"] = {
+            "type": "agent", "id": "a2", "label": "Archer", "self": False,
+        }
+        handled_before = len(adapter.handled)
+        await adapter._on_frame(brief)
+        assert len(adapter.handled) == handled_before, "it was queued behind the question"
+        assert wire.of_type("done")[-1] == {
+            "v": 1, "type": "done", "requestId": "req_agent", "outcome": "cancelled",
+        }
+        assert CLARIFY.has_pending(session_key), "the question was ended by an unrelated brief"
+
+    run(scenario())
+
+
+def test_a_choice_is_measured_as_the_platform_counts_it() -> None:
+    """UTF-16 units, as the gateway's zod counts: 150 emoji are 150 code points and 300
+    units, and a question the platform would refuse is asked in text instead."""
+    from uffici_for_hermes.adapter import _question_card
+
+    assert _question_card("Which?", ["😀" * 150], "q1", False) is None
+    assert _question_card("Which?", ["😀" * 100], "q1", False) is not None
