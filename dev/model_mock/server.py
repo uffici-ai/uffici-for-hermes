@@ -64,17 +64,49 @@ MAX_BODY_BYTES = 4 << 20
 _served = 0
 
 
+def _user_messages(payload: dict) -> list[str]:
+    """Every user message's text, oldest first."""
+    texts = []
+    for message in payload.get("messages") or []:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            texts.append(
+                " ".join(part.get("text", "") for part in content if isinstance(part, dict))
+            )
+    return texts
+
+
 def _last_user_message(payload: dict) -> str:
-    for message in reversed(payload.get("messages") or []):
-        if message.get("role") == "user":
-            content = message.get("content")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                return " ".join(
-                    part.get("text", "") for part in content if isinstance(part, dict)
-                )
-    return ""
+    texts = _user_messages(payload)
+    return texts[-1] if texts else ""
+
+
+def _asked_before(payload: dict) -> bool:
+    """Whether an EARLIER user message already carried the ask marker (#2235).
+
+    A turn cancelled while it waited on its question leaves its message unanswered, so
+    the next brief carries it again beside the person's new words. The person has
+    already been asked; asking again would turn the answer into a second card.
+    """
+    return any(ASK_MARKER in text for text in _user_messages(payload)[:-1])
+
+
+def _offers_clarify(payload: dict) -> bool:
+    """Whether this request offers the ``clarify`` tool at all.
+
+    A model cannot call a tool it was not given. Hermes also makes tool-less calls of
+    its own around a turn (the first message alone, no tools); answering one of those
+    with a clarify call is a thing no real model does.
+    """
+    for tool in payload.get("tools") or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and function.get("name") == "clarify":
+            return True
+    return False
 
 
 def _clarify_result(payload: dict) -> str | None:
@@ -280,12 +312,20 @@ class Handler(BaseHTTPRequestHandler):
         # A question (#2232): the marked turn calls clarify, and the turn it resumes
         # after the person answered says what they chose.
         answered = _clarify_result(payload)
-        asks = answered is None and bool(ASK_MARKER) and ASK_MARKER in asked
+        asks = (
+            answered is None
+            and bool(ASK_MARKER)
+            and ASK_MARKER in asked
+            and not _asked_before(payload)
+            and _offers_clarify(payload)
+        )
         if answered is not None:
             text = f"{REPLY_PREFIX}you answered: {answered[:200]}"
 
-        # 🔴 One line per request, and it carries NO transcript content — a
-        # count, two booleans and two lengths. The default handler's request
+        # 🔴 One line per request, and it carries NO transcript content — counts,
+        # booleans, lengths, and the ROLES of the last four messages (the shape of
+        # the call: a tool-less aux call on the first message alone read, in #2272's
+        # diagnosis, exactly like a turn until the roles showed it). The default handler's request
         # line is silenced below precisely because it would carry content; this
         # says what the mock DID without saying what it was told.
         #
@@ -298,7 +338,9 @@ class Handler(BaseHTTPRequestHandler):
         print(
             f"[mock] request {_served}: stream={bool(wants_stream)} "
             f"marker={marker_present} slow={slow} asks={asks} asked_chars={len(asked)} "
-            f"reply_chars={len(text)}",
+            f"reply_chars={len(text)} messages={len(payload.get('messages') or [])} "
+            f"tools={len(payload.get('tools') or [])} "
+            f"roles={','.join(str(m.get('role')) for m in (payload.get('messages') or [])[-4:])}",
             flush=True,
         )
 

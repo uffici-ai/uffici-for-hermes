@@ -57,6 +57,12 @@ SCRIPT_COMPLETE = "script complete"
 CONNECTION_CLOSED = "closing the plugin connection"
 # The one close that is not a fault: the companion shutting down at the end.
 SHUTTING_DOWN = "shutting_down"
+# What the companion logs when a `restartHarness` step wants Hermes restarted
+# mid-turn (#2235). Only this runner can: the companion shares the pod's network,
+# not its processes. Each line is one restart of the Hermes container.
+RESTART_HARNESS = "restart the harness"
+# How long Hermes gets to shut down on a restart before Docker kills it.
+RESTART_GRACE_S = 30
 
 
 class Failure(Exception):
@@ -91,6 +97,11 @@ HERMES_TURN_ERROR = "Agent error in session"
 
 #: The model mock's line per completion it served (`model_mock/server.py`).
 MOCK_COMPLETION = "[mock] request "
+
+
+def restarts_owed(lines: list[dict], done: int) -> int:
+    """How many harness restarts the companion has asked for that this run has not made."""
+    return max(0, sum(1 for line in lines if line.get("msg") == RESTART_HARNESS) - done)
 
 
 def harness_failures(hermes_log: str, mock_log: str) -> list[str]:
@@ -344,9 +355,20 @@ def run(version: str, fixture_dir: Path) -> None:
             raise Failure("; ".join(failures), probe_stderr)
 
         deadline = time.monotonic() + SCRIPT_TIMEOUT_S
+        restarts = 0
         exit_code = exit_code_of(companion)
         while exit_code is None and time.monotonic() < deadline:
             time.sleep(1)
+            for _ in range(restarts_owed(log_lines(follower.text), restarts)):
+                restarts += 1
+                print(f"\n── restarting Hermes mid-turn ({restarts})", flush=True)
+                restart = subprocess.run(
+                    ["docker", "restart", "-t", str(RESTART_GRACE_S), hermes],
+                    text=True,
+                    capture_output=True,
+                )
+                if restart.returncode != 0:
+                    raise Failure("the Hermes container would not restart", the_other_side())
             exit_code = exit_code_of(companion)
         if exit_code is None:
             raise Failure("the scripted conversation did not finish in time", the_other_side())

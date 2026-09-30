@@ -188,3 +188,13 @@ def test_the_hermes_contract_probe_runs_inside_the_gateway_as_hermes(monkeypatch
     assert json.loads(seen["args"][-1])["name"] == "uffici-for-hermes"
     assert "def follow_up_hooks_reach_the_adapter" in seen["kwargs"]["input"]
     assert seen["kwargs"]["timeout"] == e2e.CONTRACT_TIMEOUT_S, "a hung probe must end the run"
+
+
+def test_each_restart_the_companion_asks_for_is_made_once() -> None:
+    """#2235: a `restartHarness` step waits on a restart only this runner can make."""
+    asked = {"msg": e2e.RESTART_HARNESS}
+    other = {"msg": e2e.PLUGIN_READY}
+    assert e2e.restarts_owed(_log(other), 0) == 0
+    assert e2e.restarts_owed(_log(asked, other), 0) == 1
+    assert e2e.restarts_owed(_log(asked, other), 1) == 0
+    assert e2e.restarts_owed(_log(asked, other, asked), 1) == 1

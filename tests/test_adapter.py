@@ -9,6 +9,7 @@ import pytest
 
 from conftest import (
     CLARIFY,
+    MessageEvent,
     MessageType,
     PlatformConfig,
     ProcessingOutcome,
@@ -1474,9 +1475,17 @@ def test_a_question_whose_post_failed_upstream_is_released_by_its_cancel() -> No
 
     async def scenario():
         adapter, _, brief, session_key, _ = await asked()
+        handled = len(adapter.handled)
         await adapter._on_frame({**golden("cancel-failed"), "requestId": brief["requestId"]})
         assert ("clear_session", session_key) in CLARIFY.calls
         assert adapter._pending_questions == {}
+        # 🔴 #2272: and the turn STOPS. Released and left running, it carries on with an
+        # empty answer, Hermes merges the person's next message into it, and that
+        # message's request never closes — the completion names the withdrawn one.
+        stops = [event for event in adapter.handled[handled:] if event.text == "/stop"]
+        assert len(stops) == 1, "a withdrawn question request left its turn running"
+        assert stops[0].source.chat_id == brief["conversationId"]
+        assert stops[0].allow_gateway_control is True
 
     run(scenario())
 
@@ -1535,3 +1544,99 @@ def test_a_choice_is_measured_as_the_platform_counts_it() -> None:
 
     assert _question_card("Which?", ["😀" * 150], "q1", False) is None
     assert _question_card("Which?", ["😀" * 100], "q1", False) is not None
+
+
+def startup_resume(chat_id: str = "conv_1") -> MessageEvent:
+    """What Hermes hands the adapter for a restart-interrupted session on boot
+    (``gateway/run_startup.py::_schedule_resume_pending_sessions``)."""
+    adapter, _ = build(FakeStore())
+    return MessageEvent(
+        text="", source=adapter.build_source(chat_id=chat_id, chat_type="dm"), internal=True
+    )
+
+
+def test_hermess_startup_auto_resume_is_declined_when_the_companion_redelivers() -> None:
+    """🔴 #2273: a restart mid-turn answered the person twice — Hermes's auto-resume
+    turn, then the brief the companion redelivered (#2234). The companion's record of
+    the work is the one answered; Hermes keeps the session resume-pending, so the
+    redelivered brief carries its interruption note."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore())
+        await adapter._on_companion_hello(
+            {"v": 1, "type": "hello", "features": ["question", "redelivery"]}
+        )
+        handled = len(adapter.handled)
+        await adapter.handle_message(startup_resume())
+        assert adapter.handled[handled:] == [], "Hermes's resume turn reached the harness"
+
+        # A brief is never the resume, whatever the companion says.
+        brief = MessageEvent(
+            text="", source=startup_resume().source, internal=True,
+            metadata={"uffici_request_id": "req_1"},
+        )
+        await adapter.handle_message(brief)
+        assert adapter.handled[-1] is brief
+
+    run(scenario())
+
+
+def test_hermess_startup_auto_resume_runs_when_the_companion_does_not_redeliver() -> None:
+    """An older companion hands a restarted harness nothing again, so Hermes's own
+    resume is the only thing that finishes the interrupted turn."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore())
+        await adapter._on_companion_hello({"v": 1, "type": "hello", "features": ["question"]})
+        resume = startup_resume()
+        await adapter.handle_message(resume)
+        assert adapter.handled[-1] is resume
+
+    run(scenario())
+
+
+def test_a_startup_resume_waits_for_the_companions_hello(monkeypatch) -> None:
+    """#2273: Hermes resumes on the same boot the plugin connects on, so the resume can
+    arrive before the companion's hello — deciding on an empty feature set would admit
+    it. It waits; and with no hello at all it reads as an older companion."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore())
+        resume = startup_resume()
+        pending = asyncio.ensure_future(adapter.handle_message(resume))
+        await asyncio.sleep(0)
+        await adapter._on_companion_hello(
+            {"v": 1, "type": "hello", "features": ["question", "redelivery"]}
+        )
+        assert await pending is None, "a declined resume answers nothing"
+        assert resume not in adapter.handled, "the resume was decided before the hello"
+
+        monkeypatch.setattr(adapter_module, "HELLO_WAIT_SECONDS", 0.01)
+        silent, _ = build(FakeStore())
+        await silent.handle_message(resume)
+        assert silent.handled[-1] is resume
+
+    run(scenario())
+
+
+def test_only_hermess_resume_shape_is_declined_and_only_for_the_companion_that_said_so() -> None:
+    """#2273 review: the decline is narrow — an internal empty COMMAND is not Hermes's
+    resume — and a companion's features end with its connection."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore())
+        await adapter._on_companion_hello(
+            {"v": 1, "type": "hello", "features": ["question", "redelivery"]}
+        )
+        command = MessageEvent(
+            text="", message_type=MessageType.COMMAND,
+            source=startup_resume().source, internal=True,
+        )
+        await adapter.handle_message(command)
+        assert adapter.handled[-1] is command
+
+        await adapter.disconnect()
+        assert adapter._companion_features == frozenset()
+        assert adapter._hello_seen is None
+
+    run(scenario())

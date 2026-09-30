@@ -94,12 +94,27 @@ def test_config_silences_hermess_own_chatter() -> None:
     assert "display.background_process_notifications" not in keys
 
 
+def test_upgrade_restarts_hermes_only_through_its_own_service() -> None:
+    """`uffici upgrade` runs `restartCommand` only when `restartService` names a
+    unit that exists (#2250): without a service, `hermes gateway restart` runs the
+    gateway in the foreground and would hang the upgrade. The names are Hermes's
+    own for the default home (`hermes_cli/gateway.py` `get_service_name`,
+    `get_launchd_plist_path`)."""
+    manifest = _manifest()
+    assert manifest["restartCommand"] == ["hermes", "gateway", "restart"]
+    assert manifest["restartService"] == {
+        "systemd": "hermes-gateway",
+        "launchd": "ai.hermes.gateway",
+    }
+
+
 def test_manifest_carries_only_fields_the_companion_schema_knows() -> None:
     # The companion's schema is `additionalProperties: false`; this is its
     # field list, kept in step by hand and by the platform's parity guard.
     known = {
         "manifestVersion", "harness", "name", "version", "pluginDir", "homeEnv",
         "defaultHome", "enable", "configSet", "config", "envPath", "envFile", "env", "restart",
+        "restartCommand", "restartService",
     }
     unknown = set(_manifest()) - known
     assert not unknown, f"fields the companion would refuse: {sorted(unknown)}"

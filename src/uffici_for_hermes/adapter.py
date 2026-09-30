@@ -181,6 +181,13 @@ OPENER_HEADER = "[Uffici] Earlier in this conversation:"
 #: The companion's word for "a post may carry a question" (#2232), in its hello.
 FEATURE_QUESTION = "question"
 
+#: The companion's word for "a restarted harness process is handed again every request
+#: its predecessor had accepted" (#2234, #2273), in its hello.
+FEATURE_REDELIVERY = "redelivery"
+
+#: How long Hermes's startup resume waits for the companion's hello before deciding.
+HELLO_WAIT_SECONDS = 10.0
+
 #: What the wire admits for a question (`post.schema.json`): an id the answer can name,
 #: at most ten choices of at most 200 characters. A question outside these bounds is
 #: asked in plain text instead — never clipped, which would offer the person choices
@@ -262,6 +269,9 @@ class UfficiAdapter(BasePlatformAdapter):
         self._calls = CallClient(self._send)
         #: What the attached companion can carry beyond every v1 companion (#2232).
         self._companion_features: frozenset[str] = frozenset()
+        #: Whether a companion hello has arrived, so a decision that reads the features
+        #: waits for them rather than reading an empty set (#2273).
+        self._hello_seen: Any = None
         #: conversation id → the question a turn asked through the card and is waiting
         #: on: Hermes's clarify id, its session key, and the request that asked (#2232).
         self._pending_questions: dict[str, dict[str, str]] = {}
@@ -351,6 +361,7 @@ class UfficiAdapter(BasePlatformAdapter):
         self._companion_features = frozenset(
             str(name) for name in (features or []) if isinstance(name, str)
         )
+        self._hello_event().set()
         runner, self._ready_runner = self._ready_runner, None
         if runner is not None:
             runner.cancel()
@@ -414,7 +425,66 @@ class UfficiAdapter(BasePlatformAdapter):
             if client is not None:
                 await client.stop()
 
+    async def handle_message(self, event: MessageEvent) -> Any:
+        """Every event Hermes hands this platform, briefs and Hermes's own alike.
+
+        🔴 Hermes's startup auto-resume is declined when the companion redelivers
+        (#2273). On boot Hermes runs an empty internal turn for every session a restart
+        interrupted, and the companion hands the restarted process the same requests
+        again (#2234) — two answers to one message, the first a reply to Hermes's note
+        about the restart. The companion's record is the platform's, so its brief is the
+        one answered; Hermes keeps a session it did not resume ``resume_pending`` and
+        puts its interruption note into that brief's turn. An older companion does not
+        redeliver, and there Hermes's resume is the only thing that finishes the work.
+        """
+        if self._is_startup_resume(event) and await self._companion_redelivers():
+            logger.info(
+                "uffici: declined Hermes's startup resume for conversation %s; the "
+                "companion redelivers the request it interrupted",
+                str(getattr(event.source, "chat_id", "") or ""),
+            )
+            return None
+        return await super().handle_message(event)
+
+    def _hello_event(self) -> Any:
+        import asyncio
+
+        if self._hello_seen is None:
+            self._hello_seen = asyncio.Event()
+        return self._hello_seen
+
+    async def _companion_redelivers(self) -> bool:
+        """Whether the companion hands a restarted harness its requests again.
+
+        🔴 Waits for the companion's hello, briefly: Hermes resumes on boot, and this
+        plugin connects to the companion on the same boot, so the resume can arrive
+        before the features do — and an empty set would admit it, answering twice.
+        No hello within the wait is treated as an older companion and keeps Hermes's
+        resume: a companion slower than that to connect after a reboot answers twice,
+        which is the lesser failure — never the turn left unanswered.
+        """
+        import asyncio
+
+        try:
+            await asyncio.wait_for(self._hello_event().wait(), HELLO_WAIT_SECONDS)
+        except TimeoutError:
+            return False
+        return FEATURE_REDELIVERY in self._companion_features
+
+    @staticmethod
+    def _is_startup_resume(event: MessageEvent) -> bool:
+        """Hermes's synthesized resume: internal, empty, and no brief of ours."""
+        return (
+            bool(getattr(event, "internal", False))
+            and getattr(event, "message_type", None) is MessageType.TEXT
+            and not str(getattr(event, "text", "") or "").strip()
+            and not (getattr(event, "metadata", None) or {}).get("uffici_request_id")
+        )
+
     async def disconnect(self) -> None:
+        # What a companion can carry is that companion's: the next one says so again.
+        self._companion_features = frozenset()
+        self._hello_seen = None
         # 🔴 A question waiting on the card holds its Hermes turn (#2232 review): forgetting
         # it here without releasing it would leave that turn blocked, holding the session,
         # until Hermes's own clarify timeout.
@@ -1133,10 +1203,17 @@ class UfficiAdapter(BasePlatformAdapter):
             # expired it, a 5xx), and the companion withdraws it. Its question must not
             # linger: the turn would hold Hermes's session, and the person's next message
             # would be taken as the answer to a card they never saw.
+            # 🔴 And the turn STOPS (#2272). Released and left running, it carried on with
+            # an empty answer, Hermes merged the person's next message into it, and that
+            # message's request never closed: the turn's completion names this one.
+            # The stop goes by conversation, and cannot reach a NEWER turn there: a brief
+            # arriving after the question either answered it or was held, and both take
+            # the pending question out of this map before a cancel could find it.
             for asked_on, pending in list(self._pending_questions.items()):
                 if pending.get("askedBy") == request_id:
                     del self._pending_questions[asked_on]
                     self._release_questions(pending["sessionKey"])
+                    await self._stop_turn(asked_on, request_id)
             return
 
         source = self.build_source(chat_id=conversation_id, chat_type=CHAT_TYPE)
@@ -1149,17 +1226,7 @@ class UfficiAdapter(BasePlatformAdapter):
         self._release_questions(
             self._session_key_of.get(request_id) or self._session_key_for(source)
         )
-        stop = MessageEvent(
-            text="/stop",
-            message_type=MessageType.COMMAND,
-            source=source,
-            allow_gateway_control=True,
-            metadata={"uffici_request_id": request_id},
-        )
-        try:
-            await self.handle_message(stop)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("uffici: the stop event was refused (%s)", type(exc).__name__)
+        await self._stop_turn(conversation_id, request_id)
         # 🔴 The companion has already moved this request to cancelled, so the
         # `done` Hermes's completion hook would otherwise send is a frame with no
         # transition — and it would say `empty`, because the post count went with
@@ -1167,6 +1234,20 @@ class UfficiAdapter(BasePlatformAdapter):
         self._forget(request_id)
 
     # ---------------------------------------------------------------- helpers
+
+    async def _stop_turn(self, conversation_id: str, request_id: str) -> None:
+        """Hermes's own ``/stop`` for the turn running on a conversation."""
+        stop = MessageEvent(
+            text="/stop",
+            message_type=MessageType.COMMAND,
+            source=self.build_source(chat_id=conversation_id, chat_type=CHAT_TYPE),
+            allow_gateway_control=True,
+            metadata={"uffici_request_id": request_id},
+        )
+        try:
+            await self.handle_message(stop)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("uffici: the stop event was refused (%s)", type(exc).__name__)
 
     def _release_questions(self, session_key: str) -> int:
         """Answer every question pending on a session with nothing, so its turn can end.

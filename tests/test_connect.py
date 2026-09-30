@@ -165,7 +165,7 @@ def _stand_in_hermes_config(monkeypatch, model, resolved: list, window=272_000) 
         return config_context_length or window
 
     metadata.get_model_context_length = get_model_context_length
-    # The cache probe the plugin used to rely on answers nothing, as it did on hermes-01
+    # The cache probe the plugin used to rely on answers nothing, as it did on a real install
     # for the session store's model (#2230).
     metadata.get_cached_context_length = lambda model, base_url="": None
     agent = types.ModuleType("agent")

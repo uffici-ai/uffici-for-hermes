@@ -96,6 +96,43 @@ def follow_up_hooks_reach_the_adapter(factory) -> str | None:
     return None
 
 
+def startup_resume_reaches_the_adapter(factory) -> str | None:
+    """Hermes's boot resume is the event the plugin declines (#2273), by its shape.
+
+    The resume is synthesized inline and dispatched through the adapter's own
+    ``handle_message``; the plugin recognises it as internal, empty and carrying no
+    request of ours. Both lines are pinned, and the adapter is checked to decline
+    exactly that event, so a Hermes that reshapes its resume fails here instead of
+    answering the person twice. A declined resume runs no turn, and Hermes clears a
+    session's resume-pending flag only after a turn succeeds — pinned too, because that
+    is what puts the interruption note into the redelivered brief's turn instead.
+    """
+    import gateway.run_startup as startup
+    import gateway.run_turn as run_turn
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageEvent, MessageType
+
+    for line in (
+        'event = MessageEvent(text="", message_type=MessageType.TEXT, '
+        "source=source, internal=True)",
+        "await adapter.handle_message(event)",
+    ):
+        if drifted := read_site(startup, line):
+            return drifted
+    if drifted := read_site(
+        run_turn, "if session_key and _should_clear_resume_pending_after_turn(agent_result):"
+    ):
+        return drifted
+    adapter = factory(PlatformConfig(enabled=True))
+    event = MessageEvent(
+        text="", message_type=MessageType.TEXT,
+        source=adapter.build_source(chat_id="probe", chat_type="dm"), internal=True,
+    )
+    if not adapter._is_startup_resume(event):  # noqa: SLF001 — the rule under test
+        return "the plugin would not recognise Hermes's startup resume, and would answer twice"
+    return None
+
+
 def restart_notice_is_off(_factory) -> str | None:
     """The switch is set on the config the gateway READS, not on a copy of it."""
     import gateway.run_startup as startup
@@ -192,6 +229,7 @@ def main(argv: list[str]) -> int:
     checks = [
         ("follow-up hooks", lambda: follow_up_hooks_reach_the_adapter(factory)),
         ("restart notice", lambda: restart_notice_is_off(factory)),
+        ("startup resume", lambda: startup_resume_reaches_the_adapter(factory)),
         ("working line", lambda: working_line_is_off(manifest)),
         ("memory-review note", lambda: memory_note_is_off(manifest)),
     ]

@@ -53,8 +53,19 @@ def mock_server() -> Iterator[None]:
     process.wait(timeout=5)
 
 
-def ask(messages: list[dict], *, stream: bool) -> str:
-    body = json.dumps({"model": "mock-model", "stream": stream, "messages": messages}).encode()
+#: What Hermes offers on a turn: its tools, clarify among them.
+CLARIFY_TOOL = [{"type": "function", "function": {"name": "clarify", "parameters": {}}}]
+
+
+def ask(messages: list[dict], *, stream: bool, tools: list[dict] | None = None) -> str:
+    body = json.dumps(
+        {
+            "model": "mock-model",
+            "stream": stream,
+            "messages": messages,
+            "tools": CLARIFY_TOOL if tools is None else tools,
+        }
+    ).encode()
     request = urllib.request.Request(
         f"{BASE}/v1/chat/completions", data=body, headers={"Content-Type": "application/json"}
     )
@@ -174,3 +185,24 @@ def test_once_the_person_answered_the_model_says_what_they_chose(mock_server: No
     message = payload["choices"][0]["message"]
     assert "tool_calls" not in message, "the model asked again instead of answering"
     assert "Uffici task board" in message["content"]
+
+
+def test_a_marker_the_person_was_already_asked_with_does_not_ask_again(mock_server: None) -> None:
+    """#2235: a turn cancelled while it waited on its question leaves its message
+    unanswered, so the next brief carries the marker again beside the person's words.
+    The person was already asked; the model answers."""
+    messages = [
+        {"role": "user", "content": "Inês: which office? [ask-a-question]"},
+        {"role": "user", "content": "Inês: which office? [ask-a-question]\nInês: Lisbon, please"},
+    ]
+    message = json.loads(ask(messages, stream=False))["choices"][0]["message"]
+    assert "tool_calls" not in message, "the model asked a person who was already asked"
+    assert message["content"].startswith("[mock] ")
+
+
+def test_a_request_that_offers_no_clarify_is_never_asked_through_it(mock_server: None) -> None:
+    """#2235: Hermes makes tool-less calls of its own around a turn, carrying the first
+    message alone; a model cannot call a tool it was not given."""
+    messages = [{"role": "user", "content": "Inês: which office? [ask-a-question]"}]
+    message = json.loads(ask(messages, stream=False, tools=[]))["choices"][0]["message"]
+    assert "tool_calls" not in message, "the model called clarify, which was not offered"

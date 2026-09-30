@@ -62,6 +62,12 @@ notices off (see [Hermes's own notices](#hermess-own-notices)) with `hermes conf
 the companion's socket and token file into Hermes's environment file, and enables the plugin
 by name. Then restart the Hermes gateway.
 
+To upgrade later, run `uffici upgrade` on the same machine: it moves the companion and this
+plugin to their latest releases and sets Hermes's configuration again. When Hermes runs as its
+own service (`hermes gateway install`, for Hermes's default home), it restarts it with
+`hermes gateway restart`. Otherwise it tells you to restart the gateway, because for a gateway
+started by hand that command would start a new one in the foreground.
+
 ### By hand
 
 Hermes loads a plugin from one directory that is both an importable package and the home of
