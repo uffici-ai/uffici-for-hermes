@@ -55,6 +55,14 @@ PLUGIN_CONNECTED = "plugin connected"
 PLUGIN_READY = "plugin ready"
 SCRIPT_COMPLETE = "script complete"
 CONNECTION_CLOSED = "closing the plugin connection"
+# The companion's count of what an --once run shipped, by source (#2267).
+LOGS_SHIPPED = "logs shipped"
+# Every run ships the companion's lines, the plugin's and Hermes's.
+SHIPPED_SOURCES = ("companion", "plugin", "harness")
+# The companion's --once run hands each capture path a canary carrying the wire
+# token; its report counts the SOURCES whose own canary shipped redacted, never a
+# total of redactions that ordinary traffic could meet (#2259 review).
+CANARIES = len(SHIPPED_SOURCES)
 # The one close that is not a fault: the companion shutting down at the end.
 SHUTTING_DOWN = "shutting_down"
 # What the companion logs when a `restartHarness` step wants Hermes restarted
@@ -150,6 +158,33 @@ def verdict_failures(lines: list[dict], exit_code: int) -> list[str]:
     if exit_code != 0:
         unmet = verdict.get("unmet", "some")
         failures.append(f"the scripted conversation had {unmet} unmet expectation(s)")
+    return failures
+
+
+def shipped_log_failures(lines: list[dict]) -> list[str]:
+    """Whether the run shipped the machine's logs (#2267); empty for a pass.
+
+    All three sources must reach the scripted host, and no shipped line may still
+    carry the run's wire token — the one secret a fixture run holds, presented by
+    the plugin in every hello, so a line carrying it is a redaction that failed.
+    """
+    reports = [line for line in lines if line.get("msg") == LOGS_SHIPPED]
+    if len(reports) != 1:
+        return [f"the companion reported what it shipped {len(reports)} time(s), not once"]
+    report = reports[0]
+    failures = [
+        f"no {source} line was shipped"
+        for source in SHIPPED_SOURCES
+        if not isinstance(report.get(source), (int, float)) or report[source] < 1
+    ]
+    canaries = report.get("canaries")
+    if not isinstance(canaries, (int, float)) or canaries != CANARIES:
+        shown = canaries if canaries is not None else "none"
+        failures.append(f"{shown} of the run's {CANARIES} canaries shipped redacted")
+    leaks = report.get("tokenLeaks")
+    if leaks != 0:
+        count = leaks if isinstance(leaks, (int, float)) else "an unknown number of"
+        failures.append(f"{count} shipped line(s) carry the wire token")
     return failures
 
 
@@ -374,8 +409,10 @@ def run(version: str, fixture_dir: Path) -> None:
             raise Failure("the scripted conversation did not finish in time", the_other_side())
         # The companion's log is complete once it has exited.
         lines = log_lines(container_logs(companion))
-        failures = verdict_failures(lines, exit_code) + harness_failures(
-            container_logs(hermes), container_logs(mock)
+        failures = (
+            verdict_failures(lines, exit_code)
+            + shipped_log_failures(lines)
+            + harness_failures(container_logs(hermes), container_logs(mock))
         )
         if failures:
             raise Failure("; ".join(failures), the_other_side())

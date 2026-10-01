@@ -27,6 +27,9 @@ services:
       UFFICI_AGENTS_HOST: "fixture"
       UFFICI_FIXTURE: "/fixture/ci/wave1.json"
       UFFICI_ONCE: "1"
+      # The fixture's ticket raises Hermes to info; the machine's floor must match,
+      # or the stricter of the two keeps Hermes's lines at warn (#2267).
+      UFFICI_LOG_LEVEL_HARNESS: "info"
     volumes:
       # 🔴 Required, and `:?` is safe HERE: no other compose file includes this
       # one, so the marker can only stop a run that forgot the fixture.

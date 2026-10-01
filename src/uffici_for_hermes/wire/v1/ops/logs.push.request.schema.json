@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/logs.push.request.schema.json",
+  "title": "logs.push request",
+  "description": "plugin \u2192 companion, the payload of a `call` with op `logs.push`. The plugin hands over its own log lines and its harness's; the companion redacts them, applies the effective floors and keeps them for shipping. At most one logs.push is in flight per plugin; a second is answered `busy`, never refused.",
+  "type": "object",
+  "required": [
+    "entries"
+  ],
+  "properties": {
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "required": [
+          "ts",
+          "source",
+          "level",
+          "message"
+        ],
+        "properties": {
+          "ts": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "When the line was written, RFC 3339."
+          },
+          "source": {
+            "enum": [
+              "plugin",
+              "harness"
+            ],
+            "description": "The plugin's own line, or the harness's. The companion's own lines never ride this op."
+          },
+          "level": {
+            "enum": [
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ]
+          },
+          "logger": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "The logger's name inside the source."
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 16384,
+            "description": "The line. The companion redacts before it clips to the stored bound."
+          },
+          "attrs": {
+            "type": "object",
+            "description": "The line's extra attributes; every value is redacted before it is encoded."
+          }
+        }
+      }
+    }
+  }
+}

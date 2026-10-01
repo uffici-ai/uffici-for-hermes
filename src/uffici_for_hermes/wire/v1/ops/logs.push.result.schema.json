@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/logs.push.result.schema.json",
+  "title": "logs.push result",
+  "description": "companion \u2192 plugin, the payload of the `result` answering a `logs.push`. The two levels are the EFFECTIVE floors the plugin must apply from now on; `busy` and `disabled` are answers, not failures.",
+  "type": "object",
+  "required": [
+    "accepted",
+    "dropped",
+    "disabled",
+    "busy",
+    "harnessLevel",
+    "pluginLevel"
+  ],
+  "properties": {
+    "accepted": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dropped": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Lines below a floor, or not kept because shipping is off."
+    },
+    "disabled": {
+      "type": "boolean",
+      "description": "Shipping is off \u2014 on this machine or for this agent. Drop what is queued and ask again after retryAfterSeconds."
+    },
+    "busy": {
+      "type": "boolean",
+      "description": "Another logs.push from this plugin is still being handled; nothing was kept. Send again on the next tick."
+    },
+    "harnessLevel": {
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ]
+    },
+    "pluginLevel": {
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ]
+    },
+    "retryAfterSeconds": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

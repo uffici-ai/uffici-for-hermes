@@ -152,9 +152,13 @@ def test_no_transcript_content_and_no_token_reaches_a_log_line(caplog) -> None:
             }
         )
         await adapter.send("conv_gone", REPLY_TEXT)
-        return wire, sent_hello
+        # What the plugin would hand the companion as `logs.push` (#2265): every line
+        # its root handler kept over the turn, at the DEFAULT floors.
+        shipped = adapter._log_handler.drain(10_000, 1 << 30)
+        await adapter.disconnect()
+        return wire, sent_hello, shipped
 
-    wire, sent_hello = asyncio.run(scenario())
+    wire, sent_hello, shipped = asyncio.run(scenario())
 
     # 🔴 Non-vacuity, both halves: the turn must have HAPPENED, and the log must
     # exist — a guard over an empty log asserts nothing at all.
@@ -175,6 +179,64 @@ def test_no_transcript_content_and_no_token_reaches_a_log_line(caplog) -> None:
             f"the log contains {secret!r} — transcript content, display names and the wire "
             f"token are never logged"
         )
+
+    # 🔴 The same turn's logs.push payload (#2265): the lines the plugin ships carry none
+    # of it either. Non-vacuity: the plugin's own INFO lines are shipped.
+    payload = json.dumps(shipped)
+    assert shipped, "the turn shipped no line, so the absence below proves nothing"
+    for secret in SECRETS:
+        assert secret not in payload, f"a logs.push payload carries {secret!r}"
+
+
+def test_the_wire_token_is_in_no_logs_push_payload_at_any_level(caplog) -> None:
+    """At the MOST verbose floors an owner can set, the token still never ships."""
+    caplog.set_level(logging.DEBUG)
+
+    sent: list[str] = []
+
+    async def scenario():
+        async def connect_fn(_address):
+            class Connection:
+                async def send(self, raw: str) -> None:
+                    sent.append(raw)
+
+                async def close(self) -> None:
+                    return None
+
+                def __aiter__(self):
+                    async def gen():
+                        return
+                        yield  # pragma: no cover
+
+                    return gen()
+
+            return Connection()
+
+        adapter = UfficiAdapter(
+            PlatformConfig(enabled=True),
+            get_env=lambda name: {
+                "UFFICI_WIRE_TOKEN": TOKEN, "UFFICI_CONTEXT_WINDOW_TOKENS": "32000",
+            }.get(name),
+            connect_fn=connect_fn,
+        )
+        adapter._log_handler.set_levels("debug", "debug")
+        await adapter.connect()
+        for _ in range(60):
+            await asyncio.sleep(0)
+        adapter._client = LoudWire(logging.getLogger("uffici_for_hermes.test"))
+        await adapter._on_frame(BRIEF)
+        await adapter._on_frame(OPENER)
+        await adapter.send("conv_1", REPLY_TEXT)
+        shipped = adapter._log_handler.drain(10_000, 1 << 30)
+        await adapter.disconnect()
+        return shipped
+
+    shipped = asyncio.run(scenario())
+    # Non-vacuity: lines DID ship at these floors, and the token really was read and
+    # put on the wire — so its absence is a fact about the shipping, not an idle run.
+    assert shipped, "nothing shipped at debug, so this proves nothing"
+    assert any(TOKEN in raw for raw in sent), "the token never reached a hello frame"
+    assert TOKEN not in json.dumps(shipped)
 
 
 def test_the_content_really_was_in_play(caplog) -> None:

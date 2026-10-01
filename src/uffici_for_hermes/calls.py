@@ -178,7 +178,10 @@ class CallClient:
             answered = _failed(call_id, "timed_out")
         finally:
             self._pending.pop(call_id, None)
-        logger.info(
+        # A logs.push is answered at DEBUG (#2265): it runs every ten seconds, and an INFO
+        # line per push would be the loudest thing this plugin says — about its own logs.
+        logger.log(
+            logging.DEBUG if op == "logs.push" else logging.INFO,
             "uffici: call answered",
             extra={"op": op, "callId": call_id, "class": answered.error_class or "ok",
                    "requestBytes": size},

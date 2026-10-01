@@ -14,6 +14,10 @@ passed, so each is checked here against Hermes's own code:
 - **The setup manifest's switches are the ones Hermes reads.** These are the
   "⏳ Working" line, per platform, and the memory-review note, for the whole
   Hermes.
+- **Hermes's own log lines reach a root handler.** The plugin ships them with one
+  handler on the root logger: that works only while Hermes logs a turn through
+  Python ``logging`` on a named logger that propagates, with the root at INFO or
+  below.
 
 Run inside the Hermes image, by both end-to-end runners, with this file on stdin::
 
@@ -158,6 +162,55 @@ def restart_notice_is_off(_factory) -> str | None:
     return None
 
 
+def restart_cut_is_hermes_own_record(factory) -> str | None:
+    """What the plugin reads to tell a turn the restart CUT from one it let finish (#2306).
+
+    Hermes marks every running session ``resume_pending`` before a drain, clears the mark
+    from each that finished once the drain completes, and marks again before it
+    interrupts the rest; the plugin reads that mark through the store's public reader at
+    the disconnect. And the sentences Hermes sends for a turn its agent never ran are
+    produced by its own normalizer here, so a reworded release fails this probe instead
+    of leaving the plugin's list matching nothing.
+    """
+    import dataclasses
+
+    import gateway.run_shutdown as shutdown
+    from gateway.config import PlatformConfig
+    from gateway.run import _normalize_empty_agent_response
+    from gateway.session import SessionEntry, SessionStore
+
+    # The plugin's own module, as Hermes's discovery loaded it — not an import of the
+    # package, which Hermes loads under its own namespace.
+    plugin = sys.modules[type(factory(PlatformConfig(enabled=True))).__module__]
+    reasons = plugin.SHUTDOWN_INTERRUPT_REASONS
+    sentences = plugin.HERMES_UNPROCESSED_REPLIES
+
+    for line in (
+        'reason = "restart_timeout" if self._restart_requested else "shutdown_timeout"',
+        "await self.async_session_store.clear_resume_pending(_sk)",
+        'await GatewayRunner._mark_running_sessions_resume_pending(self, "mark_resume_pending")',
+    ):
+        if drifted := read_site(shutdown, line):
+            return drifted
+    if {"restart_timeout", "shutdown_timeout"} != reasons:
+        return "the plugin reads other reasons than the two Hermes marks a cut drain with"
+    if not callable(getattr(SessionStore, "lookup_by_session_key", None)):
+        return "Hermes's session store has no lookup_by_session_key for the plugin to read"
+    fields = {field.name for field in dataclasses.fields(SessionEntry)}
+    if not {"resume_pending", "resume_reason"} <= fields:
+        return "Hermes's session entry no longer carries resume_pending / resume_reason"
+    produced = {
+        _normalize_empty_agent_response({"interrupted": True, "api_calls": 0}, ""),
+        _normalize_empty_agent_response({"api_calls": 0}, ""),
+    }
+    if produced != set(sentences):
+        return (
+            "Hermes's never-processed replies differ from the plugin's list, so one would "
+            "reach the person as the agent's answer"
+        )
+    return None
+
+
 def working_line_is_off(manifest: dict) -> str | None:
     import gateway.run_turn as run_turn
     from gateway.display_config import OVERRIDEABLE_KEYS, resolve_display_setting
@@ -220,6 +273,56 @@ def memory_note_is_off(manifest: dict) -> str | None:
     return None
 
 
+def harness_logs_reach_a_root_handler(factory) -> str | None:
+    """A turn's INFO line, from Hermes's own logger, reaches the plugin's root handler."""
+    import logging
+    import tempfile
+
+    import gateway.run_turn as run_turn
+
+    if drifted := read_site(run_turn, 'logger = logging.getLogger("gateway.run")'):
+        return drifted
+    # 🔴 Hermes's setup opens file handlers under the home, and one can still be writing
+    # when the directory goes: close what the setup added, and never let the probe's
+    # cleanup be the verdict (a flake, found by the #2267 soak).
+    root = logging.getLogger()
+    before = list(root.handlers)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        try:
+            return _root_handler_verdict(factory, home, root)
+        finally:
+            for added in [h for h in root.handlers if h not in before]:
+                root.removeHandler(added)
+                added.close()
+
+
+def _root_handler_verdict(factory, home: str, root) -> str | None:
+    import importlib
+    import logging
+    from pathlib import Path
+
+    import hermes_logging
+
+    # Hermes's own setup, at its own default level (a no-op if the gateway ran it).
+    hermes_logging.setup_logging(hermes_home=Path(home), mode="gateway")
+    if root.getEffectiveLevel() > logging.INFO:
+        return f"Hermes sets the root level to {logging.getLevelName(root.level)}, above INFO"
+    package = factory.__module__.rsplit(".", 1)[0]
+    shipping = importlib.import_module(f"{package}.log_shipping")
+    handler = shipping.UfficiLogHandler()
+    handler.set_levels("info", "info")
+    shipping.install(handler, root)
+    try:
+        logging.getLogger("gateway.run").info("uffici contract probe")
+    finally:
+        shipping.uninstall(handler, root)
+    kept = handler.drain()
+    probe = [e for e in kept if e["message"] == "uffici contract probe"]
+    if not probe or probe[0]["source"] != "harness":
+        return "an INFO line on Hermes's gateway.run logger never reached a root handler"
+    return None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("usage: python - <manifest json>", file=sys.stderr)
@@ -230,8 +333,10 @@ def main(argv: list[str]) -> int:
         ("follow-up hooks", lambda: follow_up_hooks_reach_the_adapter(factory)),
         ("restart notice", lambda: restart_notice_is_off(factory)),
         ("startup resume", lambda: startup_resume_reaches_the_adapter(factory)),
+        ("restart cut", lambda: restart_cut_is_hermes_own_record(factory)),
         ("working line", lambda: working_line_is_off(manifest)),
         ("memory-review note", lambda: memory_note_is_off(manifest)),
+        ("harness logs", lambda: harness_logs_reach_a_root_handler(factory)),
     ]
     for name, check in checks:
         failure = check()

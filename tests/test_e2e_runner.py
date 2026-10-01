@@ -198,3 +198,54 @@ def test_each_restart_the_companion_asks_for_is_made_once() -> None:
     assert e2e.restarts_owed(_log(asked, other), 0) == 1
     assert e2e.restarts_owed(_log(asked, other), 1) == 0
     assert e2e.restarts_owed(_log(asked, other, asked), 1) == 1
+
+
+SHIPPED = {
+    "msg": e2e.LOGS_SHIPPED,
+    "companion": 12,
+    "plugin": 4,
+    "harness": 3,
+    "redactions": 6,
+    "tokenLeaks": 0,
+    "canaries": 3,
+}
+
+
+def test_a_run_that_shipped_all_three_sources_cleanly_passes() -> None:
+    assert e2e.shipped_log_failures(_log(VERDICT, SHIPPED)) == []
+
+
+@pytest.mark.parametrize("source", ["companion", "plugin", "harness"])
+def test_a_run_missing_a_source_is_not_a_pass(source: str) -> None:
+    assert e2e.shipped_log_failures(_log({**SHIPPED, source: 0})) == [
+        f"no {source} line was shipped"
+    ]
+
+
+def test_a_shipped_line_carrying_the_wire_token_fails_the_run() -> None:
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "tokenLeaks": 2})) == [
+        "2 shipped line(s) carry the wire token"
+    ]
+
+
+def test_a_companion_that_never_reported_what_it_shipped_fails_the_run() -> None:
+    # An older companion, or a reworded line: a pass must not be read off an absence.
+    assert e2e.shipped_log_failures(_log(VERDICT)) == [
+        "the companion reported what it shipped 0 time(s), not once"
+    ]
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "tokenLeaks": None})) == [
+        "an unknown number of shipped line(s) carry the wire token"
+    ]
+
+
+def test_a_run_whose_canaries_were_not_all_shipped_redacted_is_not_a_pass() -> None:
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "canaries": 2})) == [
+        "2 of the run's 3 canaries shipped redacted"
+    ]
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "canaries": None})) == [
+        "none of the run's 3 canaries shipped redacted"
+    ]
+    # 🔴 A total of redactions from ordinary traffic never stands in for a canary.
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "redactions": 40, "canaries": 0})) == [
+        "0 of the run's 3 canaries shipped redacted"
+    ]

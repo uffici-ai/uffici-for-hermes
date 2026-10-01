@@ -40,6 +40,10 @@ optional_env:
     description: "The local wire token itself, for a container with no shared filesystem"
     prompt: "Wire token"
     password: true
+  - name: UFFICI_LOG_SHIPPING
+    description: "Set to off to keep Hermes's log lines and the plugin's on this machine (default: on)"
+    prompt: "Ship log lines to Uffici? (on or off)"
+    password: false
   - name: UFFICI_CONTEXT_SHARE
     description: "Fraction of this harness's context window Uffici may fill (default: 0.25)"
     prompt: "Context share"

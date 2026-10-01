@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import types
 
 import pytest
 
@@ -72,6 +73,19 @@ class FakeStore:
     def __init__(self, keys: set[str] | None = None) -> None:
         self._entries = dict.fromkeys(keys or set(), object())
         self.resets: list[str] = []
+        #: Hermes's `resume_reason` on every session it marked `resume_pending` (#2306) —
+        #: what a drain that times out does to every running one. None: no mark anywhere.
+        self.resume_reason: str | None = None
+        self.lookups: list[str] = []
+
+    def lookup_by_session_key(self, key: str):
+        self.lookups.append(key)
+        reason = self.resume_reason if key else None
+        return types.SimpleNamespace(resume_pending=reason is not None, resume_reason=reason)
+
+    def mark_every_session(self, reason: str) -> None:
+        """What Hermes does to every running session when a drain times out."""
+        self.resume_reason = reason
 
     def reset_session(self, key: str) -> None:
         self.resets.append(key)
@@ -910,7 +924,7 @@ def test_disconnecting_cancels_a_settling_close() -> None:
     """
 
     async def scenario():
-        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        adapter, wire = build(FakeStore(), opener=golden("opener"))
         await adapter._on_frame(golden("brief"))
         await adapter.on_processing_complete(adapter.handled[0], ProcessingOutcome.SUCCESS)
 
@@ -928,6 +942,9 @@ def test_disconnecting_cancels_a_settling_close() -> None:
             "client that is gone"
         )
         assert not adapter._settling
+        # 🔴 #2300's other half: a turn that ended well but posted NOTHING is not closed
+        # as the wire goes — it is still owed, and the companion redelivers it.
+        assert wire.of_type("done") == [], "a silent turn was closed at the disconnect"
 
     run(scenario())
 
@@ -995,6 +1012,114 @@ def test_a_result_frame_reaches_the_call_it_names() -> None:
                                  "payload": {"facts": []}})
         answered = await task
         assert answered.ok and answered.payload == {"facts": []}
+
+    run(scenario())
+
+
+def test_a_draining_restart_closes_the_turn_it_let_finish() -> None:
+    """🔴 #2300: found live on a real Hermes machine. `hermes gateway restart` DRAINS — it
+    lets the running turn finish, then exits. The reply was posted, the process exited
+    inside the settle window, and the disconnect cancelled the close it owed: the request
+    stayed open, the companion redelivered it to the new process, and the person got the
+    answer twice. A turn that finished and posted is closed before the wire goes."""
+
+    async def scenario():
+        adapter, wire = build(FakeStore(), opener=golden("opener"))
+        brief = golden("brief")
+        await adapter._on_frame(brief)
+        await adapter.send(brief["conversationId"], "The essay, in full.")
+        await adapter.on_processing_complete(adapter.handled[0], ProcessingOutcome.SUCCESS)
+        assert not wire.of_type("done"), "closed before the settle window — not this test"
+
+        await adapter.disconnect()
+
+        assert wire.of_type("done") == [
+            {"v": 1, "type": "done", "requestId": brief["requestId"], "outcome": "answered"}
+        ], "the finished turn's close was dropped; its request will be answered again"
+
+    run(scenario())
+
+
+def test_a_restart_leaves_a_failed_turn_owed() -> None:
+    """The other half (#2300): only a turn that ENDED WELL and posted is closed at the
+    disconnect. A failed one is still owed — the companion redelivers it (#2273)."""
+
+    async def scenario():
+        adapter, wire = build(FakeStore(), opener=golden("opener"))
+        brief = golden("brief")
+        await adapter._on_frame(brief)
+        await adapter.send(brief["conversationId"], "half an answer")
+        await adapter.on_processing_complete(adapter.handled[0], ProcessingOutcome.FAILURE)
+        await adapter.disconnect()
+        assert wire.of_type("done") == []
+
+    run(scenario())
+
+
+def test_a_restart_that_cut_the_turn_leaves_it_owed() -> None:
+    """🔴 #2306: found by the CI conversation on a loaded runner. When the drain TIMES OUT,
+    Hermes marks the running session `resume_pending` (`restart_timeout`) and interrupts
+    the turn, which still ends with SUCCESS and whatever it had sent before the wire goes.
+    #2300's close-at-disconnect closed it `answered`: nothing was redelivered, and the
+    person never got the answer. A turn Hermes says it cut is left owed."""
+
+    async def scenario():
+        store = FakeStore()
+        adapter, wire = build(store, opener=golden("opener"))
+        brief = golden("brief")
+        await adapter._on_frame(brief)
+        await adapter.send(brief["conversationId"], "The first half of the essay")
+        await adapter.on_processing_complete(adapter.handled[0], ProcessingOutcome.SUCCESS)
+        store.mark_every_session("restart_timeout")
+
+        await adapter.disconnect()
+
+        assert wire.of_type("done") == [], "a cut turn was closed; nothing redelivers it"
+        assert store.lookups, "the close never asked Hermes whether it cut the turn"
+
+    run(scenario())
+
+
+def test_a_draining_restart_reads_hermes_mark_only_for_its_reasons() -> None:
+    """The other side of #2306: a session Hermes marked for something that is NOT a cut
+    drain (its crash recovery, `restart_interrupted`, at the next boot) keeps #2300's
+    close — the mark is only read as "cut" for the two drain-timeout reasons."""
+
+    async def scenario():
+        store = FakeStore()
+        adapter, wire = build(store, opener=golden("opener"))
+        brief = golden("brief")
+        await adapter._on_frame(brief)
+        await adapter.send(brief["conversationId"], "The essay, in full.")
+        await adapter.on_processing_complete(adapter.handled[0], ProcessingOutcome.SUCCESS)
+        store.mark_every_session("restart_interrupted")
+
+        await adapter.disconnect()
+
+        assert [d["outcome"] for d in wire.of_type("done")] == ["answered"]
+
+    run(scenario())
+
+
+def test_hermes_never_processed_reply_is_not_posted_and_closes_as_error() -> None:
+    """🔴 #2306: when a drain or a /stop interrupts a turn before its first model call
+    returns, Hermes replies "⚠️ Your message was interrupted before processing started …
+    Please send it again." through `send`. On Uffici the platform delivers the message
+    again itself, so it is not posted — and the turn is not `empty`, which would tell the
+    platform the message was handled."""
+    from uffici_for_hermes.adapter import HERMES_UNPROCESSED_REPLIES
+
+    async def scenario():
+        for sentence in sorted(HERMES_UNPROCESSED_REPLIES):
+            adapter, wire = build(FakeStore(), opener=golden("opener"))
+            brief = golden("brief")
+            await adapter._on_frame(brief)
+            result = await adapter.send(brief["conversationId"], sentence)
+            assert result.success, "Hermes must not retry a send it was told succeeded"
+            assert wire.of_type("post") == [], f"posted to the person: {sentence!r}"
+            await adapter.on_processing_complete(adapter.handled[0], ProcessingOutcome.SUCCESS)
+            await settle(adapter)
+            assert [d.get("outcome") for d in wire.of_type("done")] == ["error"]
 
     run(scenario())
 
@@ -1413,6 +1538,41 @@ def test_the_turn_that_asked_closes_the_request_that_answered() -> None:
         assert wire.of_type("done")[-1] == {
             "v": 1, "type": "done", "requestId": "req_answer", "outcome": "answered"
         }
+
+    run(scenario())
+
+
+def test_a_turn_that_asks_twice_closes_its_last_answering_request() -> None:
+    """🔴 #2296: found live on a real Hermes machine. One turn asked, was answered, asked AGAIN, was
+    answered — and its end closed nothing: the second question settled the request the
+    first answer had opened, and forgetting it pruned the link the turn's end follows
+    from the turn's own (first) request. The last request stayed open until its deadline."""
+
+    async def scenario():
+        adapter, wire, brief, session_key, _ = await asked()
+        original = adapter.handled[-1]
+        await adapter._on_frame(answer_brief("never mind, what is 7 times 6?", "req_first_answer"))
+
+        # The same turn asks again, now speaking on the request that carried the answer.
+        CLARIFY.register("clarify_2", session_key, "Please choose one: which board?",
+                         ["Uffici board", "Trello"])
+        await adapter.send_clarify(
+            brief["conversationId"], "Please choose one: which board?",
+            ["Uffici board", "Trello"], "clarify_2", session_key,
+        )
+        assert wire.of_type("done")[-1]["requestId"] == "req_first_answer", (
+            "the second question settles the request it was asked on"
+        )
+        await adapter._on_frame(answer_brief("Trello", "req_second_answer"))
+        await adapter.send(brief["conversationId"], "Trello it is.")
+        await adapter.on_processing_complete(original, ProcessingOutcome.SUCCESS)
+        await settle(adapter)
+
+        closes = [d for d in wire.of_type("done") if d["requestId"] == "req_second_answer"]
+        assert closes == [
+            {"v": 1, "type": "done", "requestId": "req_second_answer", "outcome": "answered"}
+        ], "the turn's end did not close the request its last answer opened"
+        assert adapter._continues == {}, "the chain outlived the turn"
 
     run(scenario())
 

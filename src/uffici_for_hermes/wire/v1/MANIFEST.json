@@ -38,5 +38,16 @@
     "schemas": 11,
     "valid": 28,
     "invalid": 19
-  }
+  },
+  "ops": {
+    "logs.push": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 4,
+      "invalidGoldens": 4
+    }
+  },
+  "opsNote": "Call ops carry their own payload schemas under ops/ and goldens under golden/ops/ \u2014 not frames, so they sit outside `schemas` and `totals`. A new op adds its row here; the Go test asserts the files on disk match it exactly."
 }

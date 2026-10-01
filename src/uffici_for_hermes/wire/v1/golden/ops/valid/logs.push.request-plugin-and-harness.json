@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "ts": "2026-09-29T12:00:00.123+00:00",
+      "source": "plugin",
+      "level": "info",
+      "logger": "uffici_for_hermes.adapter",
+      "message": "brief delivered",
+      "attrs": {
+        "requestId": "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21"
+      }
+    },
+    {
+      "ts": "2026-09-29T12:00:01.000Z",
+      "source": "harness",
+      "level": "warn",
+      "logger": "run_agent",
+      "message": "tool call failed after 2 attempts"
+    }
+  ]
+}

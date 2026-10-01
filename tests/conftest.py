@@ -48,6 +48,7 @@ that turns out to be wrong is a defect in this file, and #2014 is where it shows
 from __future__ import annotations
 
 import contextlib
+import logging
 import sys
 import types
 from abc import ABC, abstractmethod
@@ -417,6 +418,17 @@ class ClarifyGateway:
 
 CLARIFY = ClarifyGateway()
 
+
+# ----------------------------------------------------------------- hermes_logging
+
+#: TRANSCRIBED (v2026.9.24 ``hermes_logging.setup_logging`` and ``gateway/run_turn.py``):
+#: Hermes logs through Python ``logging``; ``setup_logging`` lowers the ROOT level to the
+#: config's ``logging.level`` (INFO by default) and never raises it; and a turn logs on the
+#: logger named ``gateway.run``, which propagates to the root. The plugin's log shipping
+#: (#2265) rests on all three. ``dev/hermes_contract.py`` checks the real ones, inside the
+#: e2e runs' Hermes.
+HERMES_TURN_LOGGER = "gateway.run"
+HERMES_DEFAULT_ROOT_LEVEL = logging.INFO
 
 # ----------------------------------------------------------------- gateway.run_turn_followup_ack
 

@@ -31,6 +31,7 @@ from gateway.session import build_session_key
 from .budget import BudgetUnavailable, context_budget_tokens, resolve_share, resolve_window_tokens
 from .calls import CallClient
 from .hint import PLATFORM_HINT
+from .log_shipping import LogFlusher, UfficiLogHandler, install, uninstall
 from .render import cause_author, render_entries, render_reason
 from .wire_client import (
     WireClient,
@@ -42,6 +43,9 @@ from .wire_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: ``off`` keeps Hermes's log lines and the plugin's on this machine (#2265).
+LOG_SHIPPING_ENV = "UFFICI_LOG_SHIPPING"
 
 #: The platform's name, in `config.yaml`, in the registry and on the wire.
 PLATFORM_NAME = "uffici"
@@ -120,6 +124,38 @@ DONE_SETTLE_SECONDS = 2.5
 #: is late by this much — the offset advances a few seconds later, and no reply
 #: is delayed by it at all. That is the cheaper mistake, by a wide margin.
 EMPTY_SETTLE_SECONDS = 15.0
+
+#: Hermes's reasons on a session it FORCE-interrupted because a drain timed out
+#: (``gateway/run_shutdown.py``, ``_mark_running_sessions_resume_pending``).
+#:
+#: 🔴 #2306. Hermes marks every running session ``resume_pending`` before it drains,
+#: and clears the mark from each one that finished once the drain completes; when the
+#: drain times out it marks again and interrupts. So by the time the wire goes, a
+#: session still carrying one of these reasons is a turn the restart CUT, never one it
+#: let finish (#2300) — and that turn is still owed: the companion redelivers it.
+#: ``restart_interrupted`` is Hermes's crash recovery at the next boot, not a drain,
+#: and never reaches a disconnect. Pinned against the real Hermes by
+#: ``dev/hermes_contract.py``.
+SHUTDOWN_INTERRUPT_REASONS = frozenset({"restart_timeout", "shutdown_timeout"})
+
+#: Hermes's replies for a turn its agent NEVER ran (``gateway/run.py``,
+#: ``_normalize_empty_agent_response``): a drain or a ``/stop`` interrupted it before
+#: the first model call returned, and Hermes tells the person to send the message again.
+#:
+#: 🔴 #2306. On Uffici the platform holds the message and delivers it again itself, so
+#: the sentence is wrong to the person — the #2247 reasoning, for the notice Hermes
+#: sends through ``send`` instead of ``send_private_notice`` — and it is not an
+#: answer: posting it made a cut turn look ``answered``. It is never posted, and a turn
+#: that produced only this closes as ``error``, not ``empty``, so the platform does not
+#: count the message as handled. Exact strings, pinned against the real Hermes by
+#: ``dev/hermes_contract.py`` so a reworded release fails the probe rather than this
+#: list silently matching nothing.
+HERMES_UNPROCESSED_REPLIES = frozenset({
+    "⚠️ Your message was interrupted before processing started "
+    "(likely by a recent /stop). Please send it again.",
+    "⚠️ Your message wasn't processed (the previous turn was still "
+    "being cleaned up). Please send it again.",
+})
 
 #: How often a close that found Hermes still working on the turn looks again.
 #:
@@ -252,6 +288,10 @@ class UfficiAdapter(BasePlatformAdapter):
         #: the outcome the harness reported for each settling request, so a
         #: restart does not lose it.
         self._settling_outcome: dict[str, ProcessingOutcome] = {}
+        #: requests whose turn Hermes reported as never run (#2306) — see
+        #: HERMES_UNPROCESSED_REPLIES. Bounded like the other per-request maps: forgotten
+        #: with the request.
+        self._unprocessed: set[str] = set()
         #: requests this adapter has already closed — by a cancel, or by a
         #: refusal after the fresh ack. 🔴 A second terminal frame for one of
         #: these would be a transition the companion's state machine does not
@@ -278,6 +318,15 @@ class UfficiAdapter(BasePlatformAdapter):
         #: request that asked → request whose brief carried the answer. The turn that
         #: asked keeps running after the answer, so its completion closes the LATER one.
         self._continues: dict[str, str] = {}
+        #: Hermes's log lines and this plugin's, for the companion to ship (#2265). One
+        #: handler for the adapter's life, so its queue survives a reconnect; none at all
+        #: when UFFICI_LOG_SHIPPING=off.
+        self._log_handler: UfficiLogHandler | None = (
+            None
+            if (self._get_env(LOG_SHIPPING_ENV) or "").strip().lower() == "off"
+            else UfficiLogHandler()
+        )
+        self._log_flusher: Any = None
 
     # ---------------------------------------------------------------- policy
 
@@ -348,6 +397,11 @@ class UfficiAdapter(BasePlatformAdapter):
             },
         )
         self._runner = _spawn(self._client.run())
+        if self._log_handler is not None:
+            # 🔴 On the ROOT logger, never changing its level; the flusher pushes only
+            # while no call is in flight.
+            install(self._log_handler)
+            self._log_flusher = _spawn(LogFlusher(self._log_handler, self._calls).run())
         return True
 
     async def _on_companion_hello(self, frame: dict[str, Any]) -> None:
@@ -490,10 +544,14 @@ class UfficiAdapter(BasePlatformAdapter):
         # until Hermes's own clarify timeout.
         for pending in list(self._pending_questions.values()):
             self._release_questions(pending["sessionKey"])
+        # Before the wire goes: a turn the harness let finish is not answered twice (#2300).
+        await self._close_finished_turns()
+        if self._log_handler is not None:
+            uninstall(self._log_handler)
         if self._client is not None:
             await self._client.stop()
         self._client = None
-        for name in ("_runner", "_ready_runner"):
+        for name in ("_runner", "_ready_runner", "_log_flusher"):
             runner = getattr(self, name, None)
             setattr(self, name, None)
             if runner is not None:
@@ -519,6 +577,7 @@ class UfficiAdapter(BasePlatformAdapter):
             task.cancel()
         self._settling.clear()
         self._settling_outcome.clear()
+        self._unprocessed.clear()
         self._pending_questions.clear()
         self._continues.clear()
         self._calls.fail_all()
@@ -668,7 +727,11 @@ class UfficiAdapter(BasePlatformAdapter):
             "askedBy": request_id,
         }
         await self._send({"v": 1, "type": "done", "requestId": request_id, "outcome": "answered"})
-        self._forget(request_id)
+        # 🔴 The request is over; the TURN is not — it waits on the answer and speaks on
+        # the request that brings it. Pruning the continuation into this request here cut
+        # the chain the turn's end follows, so a turn that asked twice never closed its
+        # last request (#2296).
+        self._forget(request_id, keep_chain=True)
         logger.info(
             "uffici: request %s asked a question on the card (%d choice(s)) and was settled",
             request_id, len(offered["choices"]),
@@ -762,6 +825,16 @@ class UfficiAdapter(BasePlatformAdapter):
                 "uffici: an empty reply was not posted", extra={"requestId": request_id}
             )
             return SendResult(success=False, error="empty reply")
+        if text.strip() in HERMES_UNPROCESSED_REPLIES:
+            # 🔴 #2306: Hermes's "send it again" for a turn its agent never ran. Not an
+            # answer and not true here — the platform delivers the message again. Logged
+            # by length only, like every other text this plugin declines to post.
+            self._unprocessed.add(request_id)
+            logger.info(
+                "uffici: Hermes's never-processed reply was not posted (%d chars)",
+                len(text), extra={"requestId": request_id},
+            )
+            return SendResult(success=True, message_id=request_id)
         if len(text) > POST_TEXT_MAX:
             # Clipped rather than refused: a truncated answer reaches the person,
             # and a refused frame reaches nobody.
@@ -912,23 +985,71 @@ class UfficiAdapter(BasePlatformAdapter):
         # arrived during the settle is exactly what this exists to catch, and it
         # is what turns `empty` into `answered`.
         posts = self._posts.pop(request_id, 0)
-        if outcome == ProcessingOutcome.CANCELLED:
-            frame = {"v": 1, "type": "done", "requestId": request_id, "outcome": "cancelled"}
-        elif outcome == ProcessingOutcome.FAILURE:
-            # 🔴 An error CLASS, never the provider's message: that text is the
-            # model's, or the provider's, and it travels to the platform's audit.
-            frame = {
-                "v": 1, "type": "done", "requestId": request_id,
-                "outcome": "error", "errorClass": "harness_error",
-            }
-        else:
-            frame = {
-                "v": 1, "type": "done", "requestId": request_id,
-                "outcome": "answered" if posts else "empty",
-            }
-
-        await self._send(frame)
+        if not posts and request_id in self._unprocessed:
+            # 🔴 #2306: Hermes said its agent never ran this turn. `empty` would tell the
+            # platform the message was handled and advance past it.
+            outcome = ProcessingOutcome.FAILURE
+        await self._send(_done_frame(request_id, outcome, posts))
         self._forget(request_id)
+
+    def _interrupted_by_shutdown(self, request_id: str) -> bool:
+        """Whether Hermes force-interrupted this request's turn at a drain that timed out.
+
+        🔴 #2306. Read from Hermes's own record (``lookup_by_session_key``, its public
+        reader) rather than inferred: see SHUTDOWN_INTERRUPT_REASONS. A store that cannot
+        answer reads as "not interrupted", which keeps #2300's close.
+        """
+        key = self._session_key_of.get(request_id)
+        lookup = getattr(getattr(self, "_session_store", None), "lookup_by_session_key", None)
+        if not key or not callable(lookup):
+            return False
+        try:
+            entry = lookup(key)
+        except Exception:  # noqa: BLE001 — a harness internal; never fatal to a disconnect
+            logger.warning(
+                "uffici: could not read Hermes's session record for request %s",
+                request_id, extra={"requestId": request_id},
+            )
+            return False
+        return bool(getattr(entry, "resume_pending", False)) and (
+            getattr(entry, "resume_reason", None) in SHUTDOWN_INTERRUPT_REASONS
+        )
+
+    async def _close_finished_turns(self) -> None:
+        """Close, now, every settling turn that ended well and posted (#2300).
+
+        🔴 Called as the wire goes. A draining restart (`hermes gateway restart`) lets the
+        running turn FINISH, then exits inside its settle window; cancelling that close
+        left the request open, the companion redelivered it to the new process, and the
+        person was answered twice. No reply can follow from a process that is leaving,
+        so the settle has nothing left to wait for. A turn that failed, was cancelled or
+        posted nothing is NOT closed: it is still owed, and the companion's redelivery
+        is how it gets answered (#2273).
+
+        🔴 Nor is a turn the restart CUT (#2306). When the drain times out Hermes interrupts
+        the running turn, and the turn still "ends" — with SUCCESS and whatever it had
+        sent — before the wire goes. Closing it `answered` lost the request: nothing was
+        redelivered and the person never got the answer. Hermes's own mark says which
+        turns those are.
+        """
+        for request_id in list(self._settling):
+            outcome = self._settling_outcome.get(request_id)
+            if outcome != ProcessingOutcome.SUCCESS or request_id in self._closed:
+                continue
+            posts = self._posts.get(request_id, 0)
+            if not posts:
+                continue
+            if self._interrupted_by_shutdown(request_id):
+                logger.info(
+                    "uffici: request %s was cut by the restart; leaving it to be redelivered",
+                    request_id, extra={"requestId": request_id},
+                )
+                continue
+            task = self._settling.pop(request_id)
+            task.cancel()
+            self._posts.pop(request_id, None)
+            await self._send(_done_frame(request_id, outcome, posts))
+            self._forget(request_id)
 
     # ---------------------------------------------------------------- inbound
 
@@ -1271,15 +1392,19 @@ class UfficiAdapter(BasePlatformAdapter):
             logger.info("uffici: released %d pending question(s) so the stop can take", released)
         return released
 
-    def _forget(self, request_id: str) -> None:
+    def _forget(self, request_id: str, *, keep_chain: bool = False) -> None:
         # Remembered as closed, bounded, so a late lifecycle hook for it is a
         # no-op rather than a second terminal frame.
         self._closed[request_id] = None
+        self._unprocessed.discard(request_id)
         # A continuation into a request that is over leads nowhere (#2232): bounded by the
-        # requests still open, never by the life of the process.
-        for asked, answering in list(self._continues.items()):
-            if answering == request_id:
-                del self._continues[asked]
+        # requests still open, never by the life of the process. Unless the request closed
+        # because its turn ASKED: that turn carries on through it (#2296), and its end
+        # pops the chain.
+        if not keep_chain:
+            for asked, answering in list(self._continues.items()):
+                if answering == request_id:
+                    del self._continues[asked]
         if len(self._closed) > CLOSED_MEMORY:
             del self._closed[next(iter(self._closed))]
         conversation_id = self._conversation_of.pop(request_id, None)
@@ -1414,6 +1539,23 @@ def _question_card(
 def _utf16_len(text: str) -> int:
     """Length as the platform's schemas count it: UTF-16 units, not code points."""
     return len(text.encode("utf-16-le")) // 2
+
+
+def _done_frame(request_id: str, outcome: ProcessingOutcome, posts: int) -> dict[str, Any]:
+    """The `done` a turn's end sends: how it ended, never why in the harness's words."""
+    if outcome == ProcessingOutcome.CANCELLED:
+        return {"v": 1, "type": "done", "requestId": request_id, "outcome": "cancelled"}
+    if outcome == ProcessingOutcome.FAILURE:
+        # 🔴 An error CLASS, never the provider's message: that text is the
+        # model's, or the provider's, and it travels to the platform's audit.
+        return {
+            "v": 1, "type": "done", "requestId": request_id,
+            "outcome": "error", "errorClass": "harness_error",
+        }
+    return {
+        "v": 1, "type": "done", "requestId": request_id,
+        "outcome": "answered" if posts else "empty",
+    }
 
 
 def _person_answer(delta: list) -> str | None:

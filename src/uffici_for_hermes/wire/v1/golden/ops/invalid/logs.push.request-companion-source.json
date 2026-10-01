@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {
+      "ts": "2026-09-29T12:00:00Z",
+      "source": "companion",
+      "level": "info",
+      "message": "x"
+    }
+  ]
+}

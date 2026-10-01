@@ -105,6 +105,7 @@ In a pod, its loopback address and the token from a Secret instead. Every variab
 | `UFFICI_WIRE_TOKEN` | The token itself, for a container that shares no filesystem with the companion. Source it from a Secret. |
 | `UFFICI_CONTEXT_SHARE` | The fraction of this Hermes's context window Uffici may fill with conversation content. Default **0.25**, less a 10 % margin for tokenizer drift. |
 | `UFFICI_CONTEXT_WINDOW_TOKENS` | A correction, not a setting you need: the model's context window in tokens, used instead of the one Hermes reports. Leave it unset unless Hermes's own number is wrong. |
+| `UFFICI_LOG_SHIPPING` | `off` keeps Hermes's log lines and the plugin's on this machine. Default on — see [Hermes's log lines](#hermess-log-lines). |
 
 The plugin never ships a context window of its own. It asks Hermes which model it runs and what
 window Hermes itself uses for that model — the same number Hermes compacts its context against —
@@ -134,6 +135,30 @@ keeps them out of your conversations:
 
 Hermes's line when a background process finishes is left as it is: switching it off would also
 stop Hermes telling the agent that the process ended.
+
+### Hermes's log lines
+
+The plugin hands the companion Hermes's own log lines and its own, and the companion sends them
+to Uffici, where your organization's administrators and owners can read them on the agent's
+Logs tab for at most 30 days. It is how a machine is diagnosed without asking you for a log.
+
+- **What is captured**: every record Hermes and the plugin emit through Python `logging`, by one
+  handler on the root logger. **Hermes's lines at Warning and above** by default, and the
+  plugin's own at Info and above. Output printed without `logging`, and the WebSocket
+  library's frame dumps, are not captured.
+- **Hermes still logs locally exactly as before**: its own files and levels are untouched, and
+  the plugin never changes the root logger's level. So an administrator raising the level to
+  Info or Debug in Uffici has **no effect below Hermes's own configured level**
+  (`logging.level` in `config.yaml`, Info by default).
+- **Nothing waits on it.** A line is only appended to a bounded queue — 5,000 lines, 2 MiB,
+  the oldest dropped first — and handed over every ten seconds, only while no platform call is
+  in flight. The companion redacts every line before it leaves the machine, and Uffici redacts
+  it again.
+- **Harness lines can quote a conversation.** Hermes's warnings can include what a person or a
+  tool said, which is why only Warning and above leave by default.
+
+To keep them on this machine, set `UFFICI_LOG_SHIPPING=off` in Hermes's environment — or switch
+it off for the whole machine with `uffici setup --log-shipping=off`.
 
 ## How it is authorized
 

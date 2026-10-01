@@ -1,0 +1,8 @@
+{
+  "accepted": 1,
+  "dropped": 1,
+  "disabled": false,
+  "busy": false,
+  "harnessLevel": "warn",
+  "pluginLevel": "info"
+}
