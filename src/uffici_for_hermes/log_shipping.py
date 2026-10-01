@@ -46,6 +46,10 @@ FAILURE_BACKOFF_SECONDS = 60.0
 DISABLED_WAIT_SECONDS = 15 * 60.0
 PUSH_DEADLINE_MS = 10_000
 
+#: How long a disconnect may spend handing over what is queued (#2313). 🔴 A restart
+#: is never held longer than this: what has not gone by then stays queued.
+FINAL_FLUSH_SECONDS = 2.0
+
 #: A line longer than this is clipped here; the companion clips to the stored bound.
 MAX_MESSAGE_CHARS = 16_000
 
@@ -271,6 +275,34 @@ class UfficiLogHandler(logging.Handler):
             return self._dropped
 
 
+#: The process's one handler (#2313), made on first use.
+_shared: UfficiLogHandler | None = None
+
+
+def shared_handler() -> UfficiLogHandler:
+    """The process's one handler, installed at plugin load and used by every adapter.
+
+    🔴 One per process, not per adapter: it is installed when Hermes loads the plugin —
+    before Hermes logs its startup warnings, and long before it connects the plugin —
+    and an adapter Hermes builds later takes the same one, so no line is captured twice
+    and none logged between a disconnect and the next connect is missed. Hermes builds
+    one adapter per platform; were two alive at once, each flusher would drain this one
+    queue and the companion's ``busy`` would keep their pushes from overlapping.
+    """
+    global _shared
+    if _shared is None:
+        _shared = UfficiLogHandler()
+    return _shared
+
+
+def forget_shared_handler(root: logging.Logger | None = None) -> None:
+    """Remove the process's handler and drop it — for tests, which load the plugin again."""
+    global _shared
+    if _shared is not None:
+        uninstall(_shared, root)
+    _shared = None
+
+
 def install(handler: UfficiLogHandler, root: logging.Logger | None = None) -> None:
     """Add the handler to the root logger, once. 🔴 Never touches the root's level."""
     root = root or logging.getLogger()
@@ -294,6 +326,9 @@ class LogFlusher:
         self._last_send = clock()
         self._hold_until = 0.0
         self._pushing = False
+        #: Set while no push is in flight, so a stop can wait one out (#2313).
+        self._idle = asyncio.Event()
+        self._idle.set()
 
     async def run(self) -> None:
         """Loop until cancelled."""
@@ -318,51 +353,97 @@ class LogFlusher:
             stale = now - self._last_send >= STALENESS_ESCAPE_SECONDS
             if not idle and not stale:
                 return
-            batch = self._handler.drain()
-            if not batch:
-                return
-            self._pushing = True
-            try:
-                result = await self._calls.call(
-                    OP_LOGS_PUSH,
-                    {"entries": [{k: v for k, v in e.items() if k != "_size"} for e in batch]},
-                    deadline_ms=PUSH_DEADLINE_MS,
-                )
-            except BaseException:
-                # 🔴 The batch is out of the queue already: a push that raised (a
-                # dropped tunnel, a cancel at shutdown) puts it back rather than
-                # losing it uncounted (#2259 review).
-                self._handler.requeue(batch)
-                raise
-            finally:
-                self._pushing = False
-            self._settle(batch, result, now)
+            await self._push_one(now)
         finally:
             _IN_FLUSHER.reset(token)
 
-    def _settle(self, batch: list[dict[str, Any]], result: Any, now: float) -> None:
+    async def finish(self, task: Any) -> None:
+        """Stop the periodic loop ``task`` and hand over what is left, once (#2313).
+
+        🔴 A push already in flight is WAITED OUT, never cancelled: its frame has
+        usually reached the companion, so a cancel put back a batch the companion had
+        taken — the final push then sent it twice, or was answered ``busy`` and sent
+        nothing. The caller bounds the whole of it; the loop is cancelled even when
+        that bound cuts the wait.
+        """
+        try:
+            await self._idle.wait()
+        finally:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        await self.flush_final()
+
+    async def flush_final(self) -> None:
+        """Hand over everything queued, now — once, as the plugin disconnects (#2313).
+
+        🔴 The lines logged in the seconds before a stop are the ones that say why it
+        stopped (the signal, the drain that timed out, the interrupted tool), and they
+        sit inside the ten-second cadence: without this they died with the process.
+        It ignores the cadence and the quiet-tunnel gate, stops at the first push not
+        taken, and never bounds itself — the CALLER bounds it (``FINAL_FLUSH_SECONDS``),
+        and a push cut there puts its batch back. Never call it while ``run`` is
+        running: the companion takes one push at a time.
+        """
+        token = _IN_FLUSHER.set(True)
+        try:
+            while len(self._handler):
+                if not await self._push_one(self._clock()):
+                    return
+        finally:
+            _IN_FLUSHER.reset(token)
+
+    async def _push_one(self, now: float) -> bool:
+        """Push one batch and settle it; whether the companion took it."""
+        batch = self._handler.drain()
+        if not batch:
+            return False
+        self._pushing = True
+        self._idle.clear()
+        try:
+            result = await self._calls.call(
+                OP_LOGS_PUSH,
+                {"entries": [{k: v for k, v in e.items() if k != "_size"} for e in batch]},
+                deadline_ms=PUSH_DEADLINE_MS,
+            )
+        except BaseException:
+            # 🔴 The batch is out of the queue already: a push that raised (a
+            # dropped tunnel, a cancel at shutdown) puts it back rather than
+            # losing it uncounted (#2259 review).
+            self._handler.requeue(batch)
+            raise
+        finally:
+            self._pushing = False
+            self._idle.set()
+        return self._settle(batch, result, now)
+
+    def _settle(self, batch: list[dict[str, Any]], result: Any, now: float) -> bool:
+        """Act on a push's answer; whether to push again now — the batch was taken and
+        the companion asked for no wait."""
         if getattr(result, "error_class", None) == "malformed_payload":
             # 🔴 The wire refused the push as it stands: sending the same batch again
             # would be refused again, forever, with every later line queued behind it.
             self._handler.discard(len(batch))
             self._hold_until = now + FAILURE_BACKOFF_SECONDS
-            return
+            return False
         if not getattr(result, "ok", False):
             # Failed or timed out: keep the lines, try again in a minute.
             self._handler.requeue(batch)
             self._hold_until = now + FAILURE_BACKOFF_SECONDS
-            return
+            return False
         answer = result.payload or {}
         self._handler.set_levels(answer.get("harnessLevel"), answer.get("pluginLevel"))
         retry = answer.get("retryAfterSeconds")
         if answer.get("busy"):
             self._handler.requeue(batch)
-            return
+            return False
         if answer.get("disabled"):
             self._handler.clear()
             wait = retry if isinstance(retry, (int, float)) and retry > 0 else DISABLED_WAIT_SECONDS
             self._hold_until = now + wait
-            return
+            return False
         self._last_send = now
         if isinstance(retry, (int, float)) and retry > 0:
             self._hold_until = now + retry
+            return False
+        return True

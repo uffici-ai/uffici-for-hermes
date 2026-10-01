@@ -376,21 +376,127 @@ def adapter_with(env: dict[str, str]) -> UfficiAdapter:
     )
 
 
-def test_the_adapter_installs_the_handler_and_removes_it_on_stop() -> None:
+def test_the_adapter_installs_the_handler_once_and_keeps_it_past_a_stop() -> None:
     adapter = adapter_with({})
 
     async def scenario() -> None:
         assert await adapter.connect()
         handler = adapter._log_handler  # noqa: SLF001
-        assert handler is not None and handler in logging.getLogger().handlers
+        assert handler is log_shipping.shared_handler()
+        assert handler in logging.getLogger().handlers
         assert adapter._log_flusher is not None  # noqa: SLF001
         await adapter.connect(is_reconnect=True)  # a reconnect keeps exactly one
         assert logging.getLogger().handlers.count(handler) == 1
         await adapter.disconnect()
-        assert handler not in logging.getLogger().handlers
+        # 🔴 #2313: kept, so the lines between a disconnect and the next connect queue.
+        assert logging.getLogger().handlers.count(handler) == 1
         assert adapter._log_flusher is None  # noqa: SLF001
 
     asyncio.run(scenario())
+
+
+class AdapterCalls(FakeCalls):
+    """The recording client, as the adapter's call tunnel."""
+
+    def fail_all(self) -> None:
+        return None
+
+
+def adapter_with_calls(calls: FakeCalls) -> UfficiAdapter:
+    adapter = adapter_with({})
+    adapter._calls = calls  # noqa: SLF001
+    return adapter
+
+
+def test_disconnect_pushes_what_was_logged_just_before_it() -> None:
+    """🔴 #2313: a restart's own lines — the SIGTERM context, the drain that timed out —
+    are logged in the seconds before the stop, inside the flusher's ten-second cadence.
+    The queue died with the process, so the Logs tab never saw why the harness went."""
+    calls = AdapterCalls(in_flight=1)  # a call in flight holds back an ordinary tick
+
+    async def scenario() -> None:
+        adapter = adapter_with_calls(calls)
+        assert await adapter.connect()
+        logging.getLogger("gateway.run").warning("Gateway drain timed out after 0.0s")
+        await adapter.disconnect()
+
+    asyncio.run(scenario())
+    shipped = [e["message"] for p in calls.pushed for e in p["entries"]]
+    assert "Gateway drain timed out after 0.0s" in shipped
+    assert len(log_shipping.shared_handler()) == 0
+
+
+def test_a_hanging_final_push_never_holds_the_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 #2313: the final push is bounded. A companion that never answers costs the
+    stop that bound and no more, and the lines stay queued rather than lost uncounted."""
+    monkeypatch.setattr(log_shipping, "FINAL_FLUSH_SECONDS", 0.05)
+    calls = AdapterCalls()
+
+    async def never(*_args: Any, **_kwargs: Any) -> Answer:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    calls.call = never  # type: ignore[method-assign]
+
+    async def scenario() -> float:
+        adapter = adapter_with_calls(calls)
+        assert await adapter.connect()
+        logging.getLogger("gateway.run").warning("Shutdown context: signal=SIGTERM")
+        started = asyncio.get_running_loop().time()
+        await adapter.disconnect()
+        return asyncio.get_running_loop().time() - started
+
+    assert asyncio.run(scenario()) < 1.0, "the disconnect waited on a push that never answered"
+    assert [e["message"] for e in log_shipping.shared_handler().drain()] == [
+        "Shutdown context: signal=SIGTERM"
+    ]
+
+
+def test_a_line_logged_before_the_first_connect_is_shipped() -> None:
+    """🔴 #2313: Hermes logs its startup warnings after loading plugins and before
+    connecting them. A handler installed at connect never saw them."""
+    from test_registration import RecordingCtx
+    from uffici_for_hermes import register
+
+    register(RecordingCtx())
+    logging.getLogger("gateway.run").warning("No env user allowlists configured")
+    calls = AdapterCalls()
+
+    async def scenario() -> None:
+        adapter = adapter_with_calls(calls)
+        assert await adapter.connect()
+        await adapter.disconnect()
+
+    asyncio.run(scenario())
+    shipped = [e["message"] for p in calls.pushed for e in p["entries"]]
+    assert shipped == ["No env user allowlists configured"]
+
+
+def test_the_switch_off_installs_nothing_at_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    from test_registration import RecordingCtx
+    from uffici_for_hermes import register
+
+    monkeypatch.setenv("UFFICI_LOG_SHIPPING", "off")
+    before = list(logging.getLogger().handlers)
+    register(RecordingCtx())
+    assert logging.getLogger().handlers == before
+
+
+def test_the_final_flush_ignores_the_cadence_and_drains_every_batch() -> None:
+    handler, calls, flusher, _ = flusher_rig(in_flight=1)
+    for n in range(log_shipping.BATCH_ENTRIES + 3):
+        handler.handle(record("run_agent", logging.ERROR, f"line {n}"))
+    asyncio.run(flusher.flush_final())
+    assert [len(p["entries"]) for p in calls.pushed] == [log_shipping.BATCH_ENTRIES, 3]
+    assert len(handler) == 0
+
+
+def test_the_final_flush_stops_at_the_first_push_not_taken() -> None:
+    handler, calls, flusher, _ = flusher_rig()
+    calls.answer = Answer(ok=False, error_class="upstream_failed")
+    handler.handle(record("run_agent", logging.ERROR))
+    asyncio.run(flusher.flush_final())
+    assert len(calls.pushed) == 1 and len(handler) == 1
 
 
 def test_the_switch_off_installs_nothing() -> None:
@@ -561,3 +667,46 @@ def test_a_push_that_raises_puts_its_batch_back() -> None:
     del calls.call  # the recording client again
     asyncio.run(flusher.tick())
     assert [e["message"] for e in calls.pushed[-1]["entries"]] == ["kept"]
+
+
+def test_a_push_in_flight_at_disconnect_finishes_and_nothing_ships_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 #2313 review: a disconnect that CANCELLED the periodic push mid-flight put back
+    a batch the companion had usually already taken, so the final push sent it again —
+    or was answered busy and sent nothing. The disconnect waits for that push instead."""
+    monkeypatch.setattr(log_shipping, "FLUSH_EVERY_SECONDS", 0)
+    release = asyncio.Event()
+    started = asyncio.Event()
+    calls = AdapterCalls()
+    in_flight = {"now": 0, "most": 0}
+    original = calls.call
+
+    async def slow(op: str, payload: dict[str, Any], *, deadline_ms: int) -> Answer:
+        in_flight["now"] += 1
+        in_flight["most"] = max(in_flight["most"], in_flight["now"])
+        try:
+            answer = await original(op, payload, deadline_ms=deadline_ms)
+            started.set()
+            await release.wait()
+            return answer
+        finally:
+            in_flight["now"] -= 1
+
+    calls.call = slow  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        adapter = adapter_with_calls(calls)
+        assert await adapter.connect()
+        logging.getLogger("gateway.run").warning("first")
+        await asyncio.wait_for(started.wait(), 1.0)  # the periodic push is mid-flight
+        logging.getLogger("gateway.run").warning("second")
+        stopping = asyncio.ensure_future(adapter.disconnect())
+        await asyncio.sleep(0.01)
+        release.set()
+        await asyncio.wait_for(stopping, 1.0)
+
+    asyncio.run(scenario())
+    shipped = [e["message"] for p in calls.pushed for e in p["entries"]]
+    assert shipped == ["first", "second"], shipped
+    assert in_flight["most"] == 1, "two pushes overlapped; the companion takes one at a time"

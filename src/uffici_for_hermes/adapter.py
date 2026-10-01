@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +29,11 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import build_session_key
 
+from . import log_shipping
 from .budget import BudgetUnavailable, context_budget_tokens, resolve_share, resolve_window_tokens
 from .calls import CallClient
 from .hint import PLATFORM_HINT
-from .log_shipping import LogFlusher, UfficiLogHandler, install, uninstall
+from .log_shipping import LogFlusher, UfficiLogHandler, install, shared_handler
 from .render import cause_author, render_entries, render_reason
 from .wire_client import (
     WireClient,
@@ -318,15 +320,16 @@ class UfficiAdapter(BasePlatformAdapter):
         #: request that asked → request whose brief carried the answer. The turn that
         #: asked keeps running after the answer, so its completion closes the LATER one.
         self._continues: dict[str, str] = {}
-        #: Hermes's log lines and this plugin's, for the companion to ship (#2265). One
-        #: handler for the adapter's life, so its queue survives a reconnect; none at all
-        #: when UFFICI_LOG_SHIPPING=off.
+        #: Hermes's log lines and this plugin's, for the companion to ship (#2265). The
+        #: process's one handler (#2313), already capturing since the plugin loaded, so
+        #: its queue survives a reconnect and a second adapter; none at all when
+        #: UFFICI_LOG_SHIPPING=off.
         self._log_handler: UfficiLogHandler | None = (
-            None
-            if (self._get_env(LOG_SHIPPING_ENV) or "").strip().lower() == "off"
-            else UfficiLogHandler()
+            shared_handler() if log_shipping_on(self._get_env) else None
         )
         self._log_flusher: Any = None
+        #: The flusher the task above runs, kept so a disconnect can finish it (#2313).
+        self._log_flusher_obj: LogFlusher | None = None
 
     # ---------------------------------------------------------------- policy
 
@@ -401,7 +404,8 @@ class UfficiAdapter(BasePlatformAdapter):
             # 🔴 On the ROOT logger, never changing its level; the flusher pushes only
             # while no call is in flight.
             install(self._log_handler)
-            self._log_flusher = _spawn(LogFlusher(self._log_handler, self._calls).run())
+            self._log_flusher_obj = LogFlusher(self._log_handler, self._calls)
+            self._log_flusher = _spawn(self._log_flusher_obj.run())
         return True
 
     async def _on_companion_hello(self, frame: dict[str, Any]) -> None:
@@ -546,17 +550,38 @@ class UfficiAdapter(BasePlatformAdapter):
             self._release_questions(pending["sessionKey"])
         # Before the wire goes: a turn the harness let finish is not answered twice (#2300).
         await self._close_finished_turns()
-        if self._log_handler is not None:
-            uninstall(self._log_handler)
+        # And the lines that say why it is going (#2313).
+        await self._flush_logs_once()
         if self._client is not None:
             await self._client.stop()
         self._client = None
-        for name in ("_runner", "_ready_runner", "_log_flusher"):
+        for name in ("_runner", "_ready_runner"):
             runner = getattr(self, name, None)
             setattr(self, name, None)
             if runner is not None:
                 runner.cancel()
         self._forget_everything()
+
+    async def _flush_logs_once(self) -> None:
+        """Finish the flusher: its push in flight, then what is queued, bounded (#2313).
+
+        🔴 The handler stays installed: it is the process's, and the lines logged
+        between this disconnect and the next connect queue for that one. A push the
+        bound cuts puts its batch back — kept, never lost uncounted — and the stop is
+        never held past ``FINAL_FLUSH_SECONDS``. Hermes's own reconnect runs through
+        here too (``connect`` disconnects first), deliberately: it costs that bound at
+        most, and on a dead wire the push fails at once.
+        """
+        import asyncio
+
+        flusher, task = self._log_flusher_obj, self._log_flusher
+        self._log_flusher_obj = self._log_flusher = None
+        if flusher is None:
+            return
+        try:
+            await asyncio.wait_for(flusher.finish(task), log_shipping.FINAL_FLUSH_SECONDS)
+        except Exception:  # noqa: BLE001 — a stop never fails on its logs; the lines stay queued
+            return
 
     def _forget_everything(self) -> None:
         """Drop every per-request map.
@@ -1630,8 +1655,18 @@ def is_connected(config: PlatformConfig) -> bool:
     return True
 
 
+def log_shipping_on(get_env: Callable[[str], str | None]) -> bool:
+    """Whether this machine's lines leave it: on unless ``UFFICI_LOG_SHIPPING=off``."""
+    return (get_env(LOG_SHIPPING_ENV) or "").strip().lower() != "off"
+
+
 def register(ctx: Any) -> None:
     """The plugin's entry point, called by Hermes at startup."""
+    # 🔴 Capture starts HERE, at plugin load (#2313): Hermes logs its startup warnings
+    # after loading its plugins and before connecting them, and a handler installed at
+    # connect never saw one.
+    if log_shipping_on(env_reader()):
+        install(shared_handler())
     ctx.register_platform(
         name=PLATFORM_NAME,
         label="Uffici",

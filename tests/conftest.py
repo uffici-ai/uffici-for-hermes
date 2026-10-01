@@ -561,3 +561,18 @@ def _restore_adapter_timings():
     yield
     for name, value in saved.items():
         setattr(adapter_module, name, value)
+
+
+@pytest.fixture(autouse=True)
+def _forget_the_shared_log_handler():
+    """🔴 The plugin's log handler is one per process, installed on the ROOT logger at
+    plugin load (#2313): a test that loads the plugin leaves it there, capturing every
+    later test's lines into one queue. Every test starts and ends without it.
+
+    The import is local for the reason `_restore_adapter_timings` gives.
+    """
+    from uffici_for_hermes import log_shipping
+
+    log_shipping.forget_shared_handler()
+    yield
+    log_shipping.forget_shared_handler()

@@ -150,10 +150,16 @@ Logs tab for at most 30 days. It is how a machine is diagnosed without asking yo
   the plugin never changes the root logger's level. So an administrator raising the level to
   Info or Debug in Uffici has **no effect below Hermes's own configured level**
   (`logging.level` in `config.yaml`, Info by default).
+- **From the moment Hermes loads the plugin**, so Hermes's own startup warnings are captured
+  too, not only what follows the connection. They are held on this machine until the plugin
+  connects to the companion; a Hermes that never connects to Uffici sends none of them.
 - **Nothing waits on it.** A line is only appended to a bounded queue — 5,000 lines, 2 MiB,
   the oldest dropped first — and handed over every ten seconds, only while no platform call is
   in flight. The companion redacts every line before it leaves the machine, and Uffici redacts
   it again.
+- **A stop hands over what is left.** When Hermes stops or restarts, the plugin pushes what it
+  has queued once more before it disconnects — the lines that say why it stopped — and gives
+  that at most two seconds, so a restart is never held up by its logs.
 - **Harness lines can quote a conversation.** Hermes's warnings can include what a person or a
   tool said, which is why only Warning and above leave by default.
 
