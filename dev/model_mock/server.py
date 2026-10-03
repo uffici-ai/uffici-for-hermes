@@ -55,6 +55,36 @@ ASK_MARKER = os.environ.get("MODEL_MOCK_ASK_MARKER", "[ask-a-question]")
 ASK_QUESTION = "Which board do you mean?"
 ASK_CHOICES = ["Uffici task board", "Another app"]
 
+#: 🔴 A marker a script puts in ONE message to make that turn USE A UFFICI TOOL (#2351): the
+#: model calls ``list_boards`` — offered directly, or behind Hermes's tool search, whose
+#: ``tool_call`` bridge unwraps to it — and answers from the tool's result. Read from the
+#: LAST user message, like the ask marker; the request that carries the result answers.
+TOOL_MARKER = os.environ.get("MODEL_MOCK_TOOL_MARKER", "[use-a-tool]")
+
+#: The tool a marked turn calls, and the id its call carries — what tells the tool's
+#: result apart from a ``clarify`` answer when the turn resumes.
+TOOL_NAME = "list_boards"
+TOOL_CALL_ID = "call_mock_tool"
+
+#: Hermes's tool-search bridge (``tools/tool_search.py``): a plugin tool is deferred behind
+#: it by default, and ``tool_call {calls: [{name, arguments}]}`` invokes one.
+BRIDGE_CALL = "tool_call"
+
+#: 🔴 The brief's context must reach the model on the SYSTEM side (the context fixture
+#: carries this canary in its organization block). Reported per request as a boolean,
+#: never as text: ``system_canary`` (in a system message) and ``user_canary`` (in any
+#: other message — the placement the plugin must never make).
+CONTEXT_CANARY = os.environ.get("MODEL_MOCK_CONTEXT_CANARY", "[context-canary]")
+
+#: Appended to a reply whose request carried the canary on the SYSTEM side — the one
+#: place a transcript-only observer (the local smoke) can see that the context reached
+#: the model. Deterministic, and derived from the input like everything else here.
+CONTEXT_SEEN_MARKER = " [context-seen]"
+
+#: The sentence a brief carries when its context could not be read — it too must reach
+#: the system side. Matched by a fixed fragment of the platform's instruction.
+CONTEXT_MISSING_FRAGMENT = "context were unavailable because of a system problem"
+
 MODEL_ID = os.environ.get("MODEL_MOCK_MODEL", "mock-model")
 
 #: The largest request body this will read into memory.
@@ -78,6 +108,20 @@ def _user_messages(payload: dict) -> list[str]:
                 " ".join(part.get("text", "") for part in content if isinstance(part, dict))
             )
     return texts
+
+
+def _role_text(payload: dict, system: bool) -> str:
+    """Every system message's text (``system=True``), or every other message's."""
+    parts = []
+    for message in payload.get("messages") or []:
+        if (message.get("role") == "system") != system:
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(p.get("text", "") for p in content if isinstance(p, dict))
+    return "\n".join(parts)
 
 
 def _last_user_message(payload: dict) -> str:
@@ -109,6 +153,62 @@ def _offers_clarify(payload: dict) -> bool:
     return False
 
 
+def _offered_names(payload: dict) -> list[str]:
+    """The function names this request offers."""
+    names = []
+    for tool in payload.get("tools") or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            names.append(function["name"])
+    return names
+
+
+def _tool_route(payload: dict) -> str | None:
+    """How a marked turn can reach ``list_boards``: ``direct`` when it is offered by name,
+    ``bridge`` when Hermes deferred it behind its tool search and the bridge's listing names
+    it, None when this request cannot reach it at all — a model calls only what it is given.
+    """
+    names = _offered_names(payload)
+    if TOOL_NAME in names:
+        return "direct"
+    if BRIDGE_CALL in names and TOOL_NAME in json.dumps(payload.get("tools") or []):
+        return "bridge"
+    return None
+
+
+def _tool_call(route: str) -> dict:
+    """The one call a marked turn makes, by the route the request offers."""
+    if route == "direct":
+        name, arguments = TOOL_NAME, {}
+    else:
+        name, arguments = BRIDGE_CALL, {"calls": [{"name": TOOL_NAME, "arguments": {}}]}
+    return {
+        "id": TOOL_CALL_ID,
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments)},
+    }
+
+
+def _last_tool_message(payload: dict) -> dict | None:
+    messages = payload.get("messages") or []
+    last = messages[-1] if messages else {}
+    return last if isinstance(last, dict) and last.get("role") == "tool" else None
+
+
+def _tool_text(content: object) -> str:
+    if isinstance(content, list):
+        return " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return str(content or "")
+
+
+def _uffici_tool_result(payload: dict) -> str | None:
+    """The tool's result, when this request resumes a turn after its ``list_boards`` call."""
+    last = _last_tool_message(payload)
+    if last is None or last.get("tool_call_id") != TOOL_CALL_ID:
+        return None
+    return _tool_text(last.get("content"))
+
+
 def _clarify_result(payload: dict) -> str | None:
     """The person's answer, when this request resumes a turn after its ``clarify``.
 
@@ -116,9 +216,9 @@ def _clarify_result(payload: dict) -> str | None:
     pinned ``tools/clarify_tool.py``). A result that is not that shape is still the
     answer, as text.
     """
-    messages = payload.get("messages") or []
-    last = messages[-1] if messages else {}
-    if last.get("role") != "tool":
+    last = _last_tool_message(payload)
+    if last is None or last.get("tool_call_id") == TOOL_CALL_ID:
+        # Not a clarify answer: no tool spoke last, or it was the marked turn's own tool.
         return None
     content = last.get("content")
     try:
@@ -321,6 +421,20 @@ class Handler(BaseHTTPRequestHandler):
         )
         if answered is not None:
             text = f"{REPLY_PREFIX}you answered: {answered[:200]}"
+        # A Uffici tool (#2351): the marked turn calls it, and the turn it resumes quotes
+        # what the tool returned — derived from the result, so a run where the call never
+        # reached the platform cannot pass.
+        tool_result = _uffici_tool_result(payload)
+        route = _tool_route(payload)
+        uses_tool = (
+            answered is None
+            and tool_result is None
+            and bool(TOOL_MARKER)
+            and TOOL_MARKER in asked
+            and route is not None
+        )
+        if tool_result is not None:
+            text = f"{REPLY_PREFIX}the tool said: {tool_result[:500]}"
 
         # 🔴 One line per request, and it carries NO transcript content — counts,
         # booleans, lengths, and the ROLES of the last four messages (the shape of
@@ -333,27 +447,39 @@ class Handler(BaseHTTPRequestHandler):
         # laptop could not be told apart from the companion's side: the wire
         # shows no post either way, and "the harness produced nothing" and "the
         # harness never called the model" look identical. Now they do not.
+        system_text = _role_text(payload, system=True)
+        other_text = _role_text(payload, system=False)
+        system_canary = bool(CONTEXT_CANARY) and CONTEXT_CANARY in system_text
+        user_canary = bool(CONTEXT_CANARY) and CONTEXT_CANARY in other_text
+        system_missing = CONTEXT_MISSING_FRAGMENT in system_text
+        if system_canary and text:
+            text += CONTEXT_SEEN_MARKER
+
         global _served
         _served += 1
         print(
             f"[mock] request {_served}: stream={bool(wants_stream)} "
             f"marker={marker_present} slow={slow} asks={asks} asked_chars={len(asked)} "
+            f"uses_tool={uses_tool} tool_bridged={uses_tool and route == 'bridge'} "
+            f"tool_result={tool_result is not None} "
             f"reply_chars={len(text)} messages={len(payload.get('messages') or [])} "
             f"tools={len(payload.get('tools') or [])} "
+            f"system_canary={system_canary} user_canary={user_canary} "
+            f"system_missing={system_missing} "
             f"roles={','.join(str(m.get('role')) for m in (payload.get('messages') or [])[-4:])}",
             flush=True,
         )
 
-        if asks:
+        call = _clarify_call() if asks else _tool_call(route) if uses_tool else None
+        if call is not None:
             if wants_stream:
-                self._stream_tool_call(_clarify_call())
+                self._stream_tool_call(call)
                 return
             self._reply(200, {
                 **_completion(""),
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": None,
-                                "tool_calls": [_clarify_call()]},
+                    "message": {"role": "assistant", "content": None, "tool_calls": [call]},
                     "finish_reason": "tool_calls",
                 }],
             })

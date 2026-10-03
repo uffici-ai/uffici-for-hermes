@@ -94,6 +94,20 @@ def test_config_silences_hermess_own_chatter() -> None:
     assert "display.background_process_notifications" not in keys
 
 
+def test_the_uffici_toolset_is_left_to_hermess_own_default() -> None:
+    """🔴 No toolset setting is written. The agent's Uffici tools register in the ``uffici``
+    toolset, and the pinned Hermes enables a plugin's toolset on every platform unless an
+    operator's saved selection leaves it out (``hermes_cli/tools_config.py``,
+    ``_enabled_plugin_toolsets``); naming it after the platform also puts it in Hermes's
+    implicit ``hermes-uffici`` bundle. The only per-platform key, ``platform_toolsets.uffici``,
+    REPLACES the whole selection — ``[hermes-uffici, uffici]`` there left the agent with no
+    core tools at all, measured in the pinned image — and ``tools.tool_search`` is the whole
+    Hermes's. ``dev/hermes_contract.py`` checks the default against the real Hermes."""
+    keys = [entry["key"] for entry in _manifest()["config"]]
+    assert not [k for k in keys if k.startswith(("platform_toolsets", "known_plugin_toolsets",
+                                                 "tools.", "agent.disabled_toolsets"))]
+
+
 def test_upgrade_restarts_hermes_only_through_its_own_service() -> None:
     """`uffici upgrade` runs `restartCommand` only when `restartService` names a
     unit that exists (#2250): without a service, `hermes gateway restart` runs the

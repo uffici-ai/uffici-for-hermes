@@ -1,0 +1,8 @@
+{
+  "callUrn": null,
+  "result": {
+    "ok": false,
+    "error": "needs_approval",
+    "message": "A person must approve this tool before it runs, and they have been asked in the conversation."
+  }
+}

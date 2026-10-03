@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/tools.list.result.schema.json",
+  "title": "tools.list result",
+  "description": "companion \u2192 plugin, the payload of the `result` answering a `tools.list`. Every tool the agent may call in that conversation; a denied tool is never listed.",
+  "type": "object",
+  "required": [
+    "tools"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "tools": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "parameters",
+          "permission"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 16000
+          },
+          "parameters": {
+            "type": "object",
+            "description": "The tool's JSON Schema, as the platform wrote it."
+          },
+          "permission": {
+            "enum": [
+              "allow",
+              "ask"
+            ],
+            "description": "`ask`: a person approves each call; the first call answers needs_approval and the agent ends its turn."
+          }
+        }
+      }
+    }
+  }
+}

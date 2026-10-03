@@ -1,0 +1,30 @@
+{
+  "tools": [
+    {
+      "name": "list_boards",
+      "description": "Acts on this organization's Uffici workspace. List the boards.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "permission": "allow"
+    },
+    {
+      "name": "delete_board",
+      "description": "Acts on this organization's Uffici workspace. Delete a board.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "board": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "board"
+        ]
+      },
+      "permission": "ask"
+    }
+  ]
+}

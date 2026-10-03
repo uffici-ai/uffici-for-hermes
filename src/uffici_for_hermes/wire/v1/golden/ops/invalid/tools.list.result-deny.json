@@ -1,0 +1,10 @@
+{
+  "tools": [
+    {
+      "name": "x",
+      "description": "",
+      "parameters": {},
+      "permission": "deny"
+    }
+  ]
+}

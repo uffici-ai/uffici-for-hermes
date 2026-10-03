@@ -5,9 +5,9 @@ A ``call`` asks the companion for one platform control-plane operation; the one
 number may be in flight, and their results arrive in whatever order they finish
 — and every one is bounded by its own ``deadlineMs``.
 
-The tunnel ships before its first operation: nothing in this plugin calls it
-yet. Conversation-scoped memory is its first consumer (stage 4), which is why
-the frame pair is generic rather than a ``memory`` frame.
+The frame pair is generic rather than one frame per operation: the log push
+(``logs.push``) and the agent's tools (``tools.list``, ``tools.call``) ride it,
+and conversation-scoped memory will.
 
 🔴 A payload never reaches a log line — not the call's, not the result's. They
 carry transcript content and memory rows. What may be logged is the ``op``, the

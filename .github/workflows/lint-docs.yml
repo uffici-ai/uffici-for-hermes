@@ -29,6 +29,6 @@ jobs:
         with:
           node-version: 24
       - name: Markdown lint
-        run: npx --yes markdownlint-cli2@0.23.2 "**/*.md"
+        run: npx --yes markdownlint-cli2@0.23.3 "**/*.md"
       - name: Spelling
-        run: npx --yes cspell@10.0.1 --no-progress --config cspell.json "**/*.md"
+        run: npx --yes cspell@10.3.6 --no-progress --config cspell.json "**/*.md"

@@ -26,6 +26,10 @@ Uffici conversation**, and what the session sends is the agent's answer.
 4. When Uffici withdraws a turn, the plugin stops Hermes with its own `/stop` — first
    releasing any question the turn is waiting on, which Hermes would otherwise keep waiting
    for.
+5. The agent's Uffici tools — its boards, tables, files and connected apps, as your
+   organization has allowed them — appear in Hermes as Hermes tools. When the agent uses one,
+   the call goes through the companion to Uffici, on the turn it was made in, and its answer
+   comes back to the agent.
 
 ## Requirements
 
@@ -186,6 +190,13 @@ such a setting appears.
   person to approve a command (its guardian does this on every call against a reasoning
   model), the plugin answers no at once and the agent tells the person, inside the turn's
   deadline. Approvals through Uffici come with a later release.
+- **The agent is told what the organization tells it, on every turn.** Each brief carries
+  the context Uffici composes for that conversation: who the agent is and that it is an AI,
+  then what the organization and the folders the conversation sits in have written for every
+  agent there. The plugin places it on Hermes's system side, never in the conversation's
+  history, on every turn — so an edit in Uffici applies to the agent's next answer. When part
+  of it could not be included, the agent is told so and tells the person. With an older
+  companion no context arrives, and Hermes runs on the plugin's fixed platform note alone.
 - **A question reaches the person as a question.** When the agent asks something (Hermes's
   `clarify`), the person sees it in Uffici as a card with the choices offered and a field for
   their own answer, and the agent picks up from their answer. With an older companion the
@@ -200,11 +211,23 @@ such a setting appears.
 - **The turn ends when Hermes is idle**, not when its message handler returns: a message that
   arrives while Hermes is restoring sessions at start-up, or for a session that is already
   busy, is handled in order and the turn closes when the answer is complete.
-- **Hermes's own tools and memory stay local in this release.** What the agent reads from a
-  Uffici conversation and posts to it goes through Uffici and is recorded there; what Hermes
-  does with its local tools and its local memory is not routed through Uffici and not
-  recorded by it. Tools and memory through Uffici come with a later release; the channel they
-  will use is in place, and nothing uses it yet.
+- **The agent can act in Uffici with the tools your organization gave it.** The plugin asks
+  Uffici for the agent's tools when it connects and when a turn starts (at most once a minute)
+  and offers them to Hermes in a toolset named `uffici`, with the names, descriptions and
+  parameters Uffici gives them; a tool your organization takes away stops being offered. Each
+  call runs on the turn of the conversation it was made in, is checked and recorded by Uffici,
+  and is shown with the answer that relied on it. A tool that needs a person's approval says
+  so to the agent, and the first call asks that person in the conversation. Outside a Uffici
+  turn — from another chat platform this Hermes serves, or a scheduled job — a Uffici tool
+  does nothing and tells the agent why.
+- **Hermes's tool search applies to them too.** Hermes keeps plugin tools behind its own tool
+  search by default, so the agent finds a Uffici tool there rather than in its first list.
+  The plugin writes no toolset setting: Hermes enables a plugin's toolset on its own, and
+  `hermes tools` is where you can switch the `uffici` toolset off for a platform.
+- **Hermes's own tools and memory stay local.** What Hermes does with its local tools — its
+  terminal, its files, a web search — runs on this machine. The answer the agent posts names
+  which of those tools it used, never what it sent them or what they returned. Hermes's local
+  memory is not routed through Uffici.
 
 ## What it is not
 

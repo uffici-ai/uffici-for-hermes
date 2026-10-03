@@ -2,9 +2,10 @@
 
 A format translator and nothing else: a brief becomes one inbound message, each
 send becomes a post, the turn's end becomes a done, a cancel becomes Hermes's
-own ``/stop``. It holds no policy, no memory and no tools — the companion holds
-every connection and every secret, which is what keeps this file small enough
-to read.
+own ``/stop``. It holds no policy and no memory. The agent's Uffici tools it
+offers Hermes are the platform's catalog, and every call goes back through the
+companion (``platform_tools.py``) — the companion holds every connection and
+every secret, which is what keeps this file small enough to read.
 
 🔴 Authorization is DELEGATED, never absent. The companion authenticates the
 local wire with a token before a frame is delivered, and the platform decided
@@ -32,8 +33,10 @@ from gateway.session import build_session_key
 from . import log_shipping
 from .budget import BudgetUnavailable, context_budget_tokens, resolve_share, resolve_window_tokens
 from .calls import CallClient
+from .context import render_context
 from .hint import PLATFORM_HINT
 from .log_shipping import LogFlusher, UfficiLogHandler, install, shared_handler
+from .platform_tools import FEATURE_TOOLS, PlatformTools, on_post_tool_call
 from .render import cause_author, render_entries, render_reason
 from .wire_client import (
     WireClient,
@@ -243,7 +246,9 @@ class UfficiAdapter(BasePlatformAdapter):
 
     supports_code_blocks = True
 
-    def __init__(self, config: PlatformConfig, *, get_env=None, connect_fn=None) -> None:
+    def __init__(
+        self, config: PlatformConfig, *, get_env=None, connect_fn=None, plugin_ctx=None
+    ) -> None:
         super().__init__(config, Platform(PLATFORM_NAME))
         # 🔴 Hermes's own operational notices ("No home channel is set …") go to
         # `send_private_notice`, never `send` (#2102). With the default `public`
@@ -306,8 +311,8 @@ class UfficiAdapter(BasePlatformAdapter):
         # two as the same mechanism.
         self._closed: dict[str, None] = {}
         #: The call tunnel (#2028): platform operations through the companion,
-        #: matched to their results by callId. Nothing calls it yet; its first
-        #: consumer is conversation-scoped memory (stage 4).
+        #: matched to their results by callId — the log push (#2265) and the
+        #: agent's tools (#2350) ride it.
         self._calls = CallClient(self._send)
         #: What the attached companion can carry beyond every v1 companion (#2232).
         self._companion_features: frozenset[str] = frozenset()
@@ -330,6 +335,21 @@ class UfficiAdapter(BasePlatformAdapter):
         self._log_flusher: Any = None
         #: The flusher the task above runs, kept so a disconnect can finish it (#2313).
         self._log_flusher_obj: LogFlusher | None = None
+        #: The agent's Uffici tools as Hermes tools (#2350): registered through the plugin's
+        #: own context, each call forwarded on the request open on the conversation the call
+        #: was made in. Inert without the companion's ``tools`` feature.
+        self._tools = PlatformTools(
+            getattr(plugin_ctx, "register_tool", None),
+            call=self._calls.call,
+            request_for=self._open_request.get,
+            enabled=lambda: FEATURE_TOOLS in self._companion_features,
+        )
+        #: The last conversation a brief named — what the catalog is asked for on `ready`.
+        #: Kept across reconnects on purpose: the catalog is the agent's, and a reconnect is
+        #: exactly when it may have moved.
+        self._known_conversation: str | None = None
+        #: requests whose admission waits on the catalog refresh in flight (#2350).
+        self._admitting: set[str] = set()
 
     # ---------------------------------------------------------------- policy
 
@@ -400,6 +420,7 @@ class UfficiAdapter(BasePlatformAdapter):
             },
         )
         self._runner = _spawn(self._client.run())
+        self._tools.bind_loop(asyncio.get_running_loop())
         if self._log_handler is not None:
             # 🔴 On the ROOT logger, never changing its level; the flusher pushes only
             # while no call is in flight.
@@ -482,6 +503,10 @@ class UfficiAdapter(BasePlatformAdapter):
             client = self._client
             if client is not None:
                 await client.stop()
+            return
+        # The catalog, once the companion is taking work — for the conversation last seen,
+        # so a reconnect's first turn does not wait on it (#2350).
+        self._tools.kick(self._known_conversation)
 
     async def handle_message(self, event: MessageEvent) -> Any:
         """Every event Hermes hands this platform, briefs and Hermes's own alike.
@@ -605,6 +630,8 @@ class UfficiAdapter(BasePlatformAdapter):
         self._unprocessed.clear()
         self._pending_questions.clear()
         self._continues.clear()
+        self._admitting.clear()
+        self._tools.forget_requests()
         self._calls.fail_all()
 
     def _harness_version(self) -> str:
@@ -869,8 +896,14 @@ class UfficiAdapter(BasePlatformAdapter):
             )
             text = text[:POST_TEXT_MAX]
 
-        sent = await self._send({"v": 1, "type": "post", "requestId": request_id, "text": text})
+        frame: dict[str, Any] = {"v": 1, "type": "post", "requestId": request_id, "text": text}
+        # The turn's own tool calls this answer rests on, and what it did with Hermes's
+        # tools (#2350) — only to a companion that carries them.
+        extras = self._tools.take_extras(request_id)
+        frame.update(extras)
+        sent = await self._send(frame)
         if not sent:
+            self._tools.give_back(request_id, extras)
             return SendResult(success=False, error="the wire dropped the post")
         self._posts[request_id] = self._posts.get(request_id, 0) + 1
 
@@ -1148,6 +1181,18 @@ class UfficiAdapter(BasePlatformAdapter):
             channel_context=render_reason(
                 str(frame.get("reason") or ""), frame.get("cause"), delta
             ),
+            # 🔴 The platform's context goes in the SYSTEM-side slot, on EVERY
+            # brief — fresh or resumed — so an edit lands on the next answer.
+            # Unlike the reason above, it is stable across a session's turns
+            # (it changes only when someone edits it), which is decision 43's
+            # test for that slot; Hermes adds it at API time and never writes it
+            # into the session's messages. It composes with the static
+            # ``PLATFORM_HINT``, which Hermes places separately as the platform's
+            # context prompt: the hint says what Uffici is, this says what the
+            # organization and this place tell the agent, and neither replaces
+            # the other. ``None`` (an older companion) leaves the hint alone,
+            # exactly as before.
+            channel_prompt=render_context(frame.get("context")),
             # 🔴 False: this text is a transcript, and a member who types
             # "/stop" into a conversation must not be able to drive the harness.
             allow_gateway_control=False,
@@ -1158,6 +1203,9 @@ class UfficiAdapter(BasePlatformAdapter):
         self._session_key_of[request_id] = self._session_key_for(source)
         self._open_request[conversation_id] = request_id
         self._posts.setdefault(request_id, 0)
+        self._known_conversation = conversation_id
+        # Asked for now, so a fresh brief's opener round trip overlaps it (#2350).
+        self._tools.kick(conversation_id)
         logger.info(
             "uffici: brief %s opened on conversation %s (%s, %d delta entr%s)",
             request_id, conversation_id, "fresh" if fresh else "resumed",
@@ -1305,7 +1353,28 @@ class UfficiAdapter(BasePlatformAdapter):
 
         That makes the wire's `rejected` ack unreachable from this plugin. It
         stays in the protocol for a harness that can decide before it commits.
+
+        🔴 While the tool catalog is being read, the event waits for it (#2350): Hermes
+        builds a session's agent — and freezes its tool list — on that session's first
+        turn, so a turn admitted before its tools are registered never sees them. It waits
+        on its own task, because this runs inside the wire's read loop and the catalog's
+        answer arrives on that same loop.
         """
+        if self._tools.refreshing():
+            self._admitting.add(request_id)
+            _spawn(self._admit_after_refresh(event, request_id))
+            return
+        await self._admit_now(event, request_id)
+
+    async def _admit_after_refresh(self, event: MessageEvent, request_id: str) -> None:
+        await self._tools.wait()
+        if request_id not in self._admitting:
+            # Withdrawn, or the connection went, while it waited: nothing to hand over.
+            return
+        self._admitting.discard(request_id)
+        await self._admit_now(event, request_id)
+
+    async def _admit_now(self, event: MessageEvent, request_id: str) -> None:
         try:
             admitted = await self.handle_message(event)
         except Exception as exc:  # noqa: BLE001 — classified, never re-raised at the wire
@@ -1343,6 +1412,12 @@ class UfficiAdapter(BasePlatformAdapter):
             )
         conversation_id = self._conversation_of.get(request_id)
         self._awaiting_opener.pop(request_id, None)
+        if request_id in self._admitting:
+            # Withdrawn before Hermes ever had it (#2350): there is no turn to stop, and a
+            # `/stop` now would reach whatever else is running on that conversation.
+            self._admitting.discard(request_id)
+            self._forget(request_id)
+            return
         if conversation_id is None:
             # 🔴 A request this plugin already SETTLED — the one that asked on the card —
             # can still be cancelled: its question post failed upstream (the platform had
@@ -1422,6 +1497,8 @@ class UfficiAdapter(BasePlatformAdapter):
         # no-op rather than a second terminal frame.
         self._closed[request_id] = None
         self._unprocessed.discard(request_id)
+        self._admitting.discard(request_id)
+        self._tools.forget(request_id)
         # A continuation into a request that is over leads nowhere (#2232): bounded by the
         # requests still open, never by the life of the process. Unless the request closed
         # because its turn ASKED: that turn carries on through it (#2296), and its end
@@ -1667,10 +1744,17 @@ def register(ctx: Any) -> None:
     # connect never saw one.
     if log_shipping_on(env_reader()):
         install(shared_handler())
+    # What the agent did with Hermes's OWN tools, by name, for its posts (#2350). The hook
+    # is Hermes's observer seam (`post_tool_call`); it never changes a call.
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        register_hook("post_tool_call", on_post_tool_call)
     ctx.register_platform(
         name=PLATFORM_NAME,
         label="Uffici",
-        adapter_factory=lambda cfg: UfficiAdapter(cfg),
+        # 🔴 The plugin's context goes to the adapter: the agent's Uffici tools are
+        # registered through it, as this plugin's (#2350).
+        adapter_factory=lambda cfg: UfficiAdapter(cfg, plugin_ctx=ctx),
         check_fn=check_requirements,
         is_connected=is_connected,
         install_hint="pip install websockets   # already a Hermes dependency",

@@ -12,10 +12,11 @@ import json
 
 from uffici_for_hermes.wire import WIRE_V1
 
-#: Ten frame types plus the entry. `ready` joined them in #2014 (a plugin is
-#: connected before its harness can answer); `call` and `result` in #2028, the
-#: generic tunnel that keeps new platform operations off the wire's version.
-EXPECTED_SCHEMAS = 11
+#: Ten frame types plus the entry and the brief's context. `ready` joined them in
+#: #2014 (a plugin is connected before its harness can answer); `call` and `result`
+#: in #2028, the generic tunnel that keeps new platform operations off the wire's
+#: version; `context` in #2331, the place's context every brief carries.
+EXPECTED_SCHEMAS = 12
 
 
 def test_wire_v1_resolves_to_a_real_directory() -> None:

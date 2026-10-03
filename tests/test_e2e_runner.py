@@ -65,6 +65,41 @@ def test_a_non_zero_exit_names_the_unmet_count() -> None:
     assert failures == ["the scripted conversation had 2 unmet expectation(s)"]
 
 
+# ------------------------------------------------------------- the tool tally (#2351)
+
+TOOL_SCRIPT = {"steps": [{"step": "ring"}, {"step": "expectToolCall", "name": "list_boards"}]}
+
+
+def test_a_script_expects_a_tool_call_only_when_it_says_so() -> None:
+    assert e2e.fixture_expects_tool_call(TOOL_SCRIPT) is True
+    for script in ({"steps": [{"step": "ring"}]}, {}, {"steps": None}, [], {"steps": ["x"]}):
+        assert e2e.fixture_expects_tool_call(script) is False
+
+
+def test_a_script_that_expects_a_tool_call_passes_on_a_counted_one() -> None:
+    lines = _log({**VERDICT, "toolCalls": 1})
+    assert e2e.verdict_failures(lines, 0, expects_tool_call=True) == []
+
+
+@pytest.mark.parametrize("calls", [0, None, True, "1"])
+def test_a_script_that_expects_a_tool_call_fails_without_one(calls) -> None:
+    verdict = {**VERDICT, "toolCalls": calls} if calls is not None else VERDICT
+    failures = e2e.verdict_failures(_log(verdict), 0, expects_tool_call=True)
+    assert len(failures) == 1 and "no Uffici tool reached the platform" in failures[0]
+
+
+def test_a_script_without_the_expectation_is_judged_as_before() -> None:
+    """A superset of the old rule: a release whose script has no tool step is not asked."""
+    assert e2e.verdict_failures(_log(VERDICT), 0) == []
+    assert e2e.verdict_failures(_log({**VERDICT, "toolCalls": 0}), 0) == []
+
+
+def test_the_run_reads_the_expectation_from_the_releases_own_script() -> None:
+    source = RUNNER.read_text()
+    assert "expects_tool_call=expects_tool_call" in source
+    assert "fixture_expects_tool_call(json.loads(fixture_text))" in source
+
+
 def test_log_lines_drops_what_is_not_a_json_object() -> None:
     text = 'plain text\n[1, 2]\n{"msg": "plugin ready"}\n'
     assert e2e.log_lines(text) == [{"msg": "plugin ready"}]
@@ -208,44 +243,108 @@ SHIPPED = {
     "redactions": 6,
     "tokenLeaks": 0,
     "canaries": 3,
+    "restarts": 1,
+    "restartsWithLastWords": 1,
 }
 
 
 def test_a_run_that_shipped_all_three_sources_cleanly_passes() -> None:
-    assert e2e.shipped_log_failures(_log(VERDICT, SHIPPED)) == []
+    assert e2e.shipped_log_failures(_log(VERDICT, SHIPPED), 1) == []
 
 
 @pytest.mark.parametrize("source", ["companion", "plugin", "harness"])
 def test_a_run_missing_a_source_is_not_a_pass(source: str) -> None:
-    assert e2e.shipped_log_failures(_log({**SHIPPED, source: 0})) == [
+    assert e2e.shipped_log_failures(_log({**SHIPPED, source: 0}), 1) == [
         f"no {source} line was shipped"
     ]
 
 
 def test_a_shipped_line_carrying_the_wire_token_fails_the_run() -> None:
-    assert e2e.shipped_log_failures(_log({**SHIPPED, "tokenLeaks": 2})) == [
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "tokenLeaks": 2}), 1) == [
         "2 shipped line(s) carry the wire token"
     ]
 
 
 def test_a_companion_that_never_reported_what_it_shipped_fails_the_run() -> None:
     # An older companion, or a reworded line: a pass must not be read off an absence.
-    assert e2e.shipped_log_failures(_log(VERDICT)) == [
+    assert e2e.shipped_log_failures(_log(VERDICT), 1) == [
         "the companion reported what it shipped 0 time(s), not once"
     ]
-    assert e2e.shipped_log_failures(_log({**SHIPPED, "tokenLeaks": None})) == [
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "tokenLeaks": None}), 1) == [
         "an unknown number of shipped line(s) carry the wire token"
     ]
 
 
 def test_a_run_whose_canaries_were_not_all_shipped_redacted_is_not_a_pass() -> None:
-    assert e2e.shipped_log_failures(_log({**SHIPPED, "canaries": 2})) == [
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "canaries": 2}), 1) == [
         "2 of the run's 3 canaries shipped redacted"
     ]
-    assert e2e.shipped_log_failures(_log({**SHIPPED, "canaries": None})) == [
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "canaries": None}), 1) == [
         "none of the run's 3 canaries shipped redacted"
     ]
     # 🔴 A total of redactions from ordinary traffic never stands in for a canary.
-    assert e2e.shipped_log_failures(_log({**SHIPPED, "redactions": 40, "canaries": 0})) == [
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "redactions": 40, "canaries": 0}), 1) == [
         "0 of the run's 3 canaries shipped redacted"
     ]
+
+
+def test_every_restart_must_have_shipped_the_harnesss_own_warning() -> None:
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "restartsWithLastWords": 0}), 1) == [
+        "0 of the run's 1 restart(s) shipped the harness's own warning before it stopped"
+    ]
+    two = {**SHIPPED, "restarts": 2, "restartsWithLastWords": 1}
+    assert e2e.shipped_log_failures(_log(two), 2) == [
+        "1 of the run's 2 restart(s) shipped the harness's own warning before it stopped"
+    ]
+    # 🔴 An absent field is never a pass: an older companion cannot vouch for a restart.
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "restartsWithLastWords": None}), 1) == [
+        "none of the run's 1 restart(s) shipped the harness's own warning before it stopped"
+    ]
+
+
+def test_the_companions_restart_count_must_match_the_restarts_made() -> None:
+    none = {**SHIPPED, "restarts": 0, "restartsWithLastWords": 0}
+    assert e2e.shipped_log_failures(_log(none), 1) == [
+        "the companion counted 0 restart(s), the run made 1"
+    ]
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "restarts": None}), 1) == [
+        "the companion counted no restart(s), the run made 1"
+    ]
+    assert e2e.shipped_log_failures(_log({**SHIPPED, "restarts": True}), 1) == [
+        "the companion counted True restart(s), the run made 1"
+    ]
+    # A run with no restart step has no last words to owe.
+    assert e2e.shipped_log_failures(_log(none), 0) == []
+
+
+@pytest.mark.parametrize("made", [None, True, -1, "1"])
+def test_a_caller_that_forgets_the_restarts_is_refused(made: object) -> None:
+    with pytest.raises(TypeError):
+        e2e.shipped_log_failures(_log(SHIPPED), made)  # type: ignore[arg-type]
+
+
+def _mock(fields: str) -> str:
+    return f"[mock] request 1: stream=True marker=False {fields} reply_chars=10"
+
+
+def test_the_context_passes_on_the_system_side() -> None:
+    log = "\n".join(
+        [
+            _mock("system_canary=True user_canary=False system_missing=False"),
+            _mock("system_canary=False user_canary=False system_missing=True"),
+        ]
+    )
+    assert e2e.context_failures(log, True) == []
+
+
+def test_the_context_fails_off_the_system_side_or_on_the_user_side() -> None:
+    never = _mock("system_canary=False user_canary=False system_missing=True")
+    assert "never reached" in " ".join(e2e.context_failures(never, True))
+    user = _mock("system_canary=True user_canary=True system_missing=True")
+    assert "USER side" in " ".join(e2e.context_failures(user, True))
+    unsaid = _mock("system_canary=True user_canary=False system_missing=False")
+    assert "missing never told" in " ".join(e2e.context_failures(unsaid, True))
+
+
+def test_a_release_fixture_without_the_canary_has_nothing_to_prove() -> None:
+    assert e2e.context_failures("", False) == []

@@ -14,6 +14,16 @@ passed, so each is checked here against Hermes's own code:
 - **The setup manifest's switches are the ones Hermes reads.** These are the
   "⏳ Working" line, per platform, and the memory-review note, for the whole
   Hermes.
+- **The brief's context reaches the system side and is never stored.** The plugin
+  places it in ``MessageEvent.channel_prompt``; Hermes must join that slot into the
+  ephemeral system prompt it sends on every call, and keep it out of the session's
+  ``messages``, which it persists.
+- **The agent's Uffici tools reach the model, and each call finds its conversation.**
+  The plugin registers them through its own plugin context in the ``uffici`` toolset and
+  writes no toolset setting: Hermes must enable that toolset for the Uffici platform by
+  itself, offer the tool (directly or behind its tool-search bridge), dispatch the
+  plugin's handler, bind the turn's chat id where the handler reads it, and remove a tool
+  the plugin disposes.
 - **Hermes's own log lines reach a root handler.** The plugin ships them with one
   handler on the root logger: that works only while Hermes logs a turn through
   Python ``logging`` on a named logger that propagates, with the root at INFO or
@@ -273,6 +283,126 @@ def memory_note_is_off(manifest: dict) -> str | None:
     return None
 
 
+#: Never real context: a marker the probe looks for on each side of the boundary.
+CONTEXT_CANARY = "uffici-context-canary-7f3a"
+
+
+def context_reaches_the_system_side_only(_factory) -> str | None:
+    """``channel_prompt`` joins the system message Hermes sends, and never ``messages``.
+
+    Runs Hermes's OWN two functions on stand-ins: the gateway's join of the event's
+    ``channel_prompt`` into the agent's ephemeral system prompt, and the agent's build of
+    one API call from the session's ``messages``. The line that hands the join to the
+    agent is pinned, because no probe can call the method it sits in.
+    """
+    import agent.turn_context as turn_context
+    import gateway.run_turn_runner as run_turn_runner
+
+    if drifted := read_site(
+        run_turn_runner, "ephemeral_system_prompt=combined_ephemeral or None"
+    ):
+        return drifted
+    turn = SimpleNamespace(
+        _ctx=SimpleNamespace(
+            context_prompt="the platform hint",
+            channel_prompt=CONTEXT_CANARY,
+            source=SimpleNamespace(platform="uffici", chat_id="probe"),
+        ),
+        _runner=SimpleNamespace(_get_system_prompt_for_channel=lambda *_a, **_k: None),
+    )
+    combined = run_turn_runner.TurnRunner._combined_ephemeral_prompt(turn)  # noqa: SLF001
+    if CONTEXT_CANARY not in combined or "the platform hint" not in combined:
+        return (
+            "Hermes no longer joins the event's channel_prompt into the ephemeral system "
+            "prompt: the brief's context would never reach the model"
+        )
+    agent = SimpleNamespace(
+        ephemeral_system_prompt=combined,
+        _current_turn_timestamp=0.0,
+        model="probe",
+        _copy_reasoning_content_for_api=lambda _msg, _api: None,
+        _should_sanitize_tool_calls=lambda: False,
+    )
+    messages = [{"role": "user", "content": "hello", "api_content": "hello"}]
+    before = json.dumps(messages, sort_keys=True)
+    api_messages, _effective = turn_context.build_api_messages(
+        agent, messages, current_turn_user_idx=0, ext_prefetch_cache=None,
+        plugin_user_context=None, moa_config=None, active_system_prompt="the cached prompt",
+    )
+    system = api_messages[0] if api_messages else {}
+    if system.get("role") != "system" or CONTEXT_CANARY not in str(system.get("content")):
+        return "the channel_prompt no longer reaches the system message Hermes sends"
+    if json.dumps(messages, sort_keys=True) != before or CONTEXT_CANARY in before:
+        return "the channel_prompt reached the session's messages, which Hermes persists"
+    return None
+
+
+PROBE_TOOL = "uffici_contract_probe"
+
+
+def platform_tools_reach_the_model(factory, manifest: dict) -> str | None:
+    """The agent's Uffici tools, end to end inside the real Hermes but for the wire (#2350)."""
+    import json as _json
+    import threading
+
+    from gateway.config import PlatformConfig
+    from gateway.session_context import set_session_vars
+    from hermes_cli.plugins import VALID_HOOKS
+    from hermes_cli.tools_config import _get_platform_tools
+    from model_tools import get_tool_definitions
+    from tools.registry import registry
+
+    if "post_tool_call" not in VALID_HOOKS:
+        return "Hermes no longer has the post_tool_call hook the plugin reports activity from"
+    if any(entry["key"].startswith(("platform_toolsets", "tools.")) for entry in
+           manifest.get("config", [])):
+        return "the manifest writes a toolset setting, which replaces the operator's selection"
+    adapter = factory(PlatformConfig(enabled=True))
+    tools = adapter._tools  # noqa: SLF001 — the plugin's own registrar, as the gateway built it
+    plugin = sys.modules[type(tools).__module__]
+    adapter._companion_features = frozenset({plugin.FEATURE_TOOLS})  # noqa: SLF001
+    tools.apply({PROBE_TOOL: {
+        "name": PROBE_TOOL, "description": "Contract probe.", "permission": "allow",
+        "parameters": {"type": "object", "properties": {}},
+    }})
+    entry = registry.get_entry(PROBE_TOOL)
+    if entry is None or entry.toolset != plugin.TOOLSET:
+        return "the plugin's context registered no tool in the uffici toolset"
+    enabled = sorted(_get_platform_tools(configured(manifest), "uffici"))
+    if plugin.TOOLSET not in enabled:
+        return f"Hermes does not enable the {plugin.TOOLSET} toolset for the uffici platform"
+    definitions = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True) or []
+    names = {d.get("function", {}).get("name") for d in definitions}
+    if PROBE_TOOL not in names and not (
+        "tool_call" in names and PROBE_TOOL in _json.dumps(definitions)
+    ):
+        return "a registered Uffici tool never reaches the model, directly or by tool search"
+
+    seen: dict[str, object] = {}
+
+    def turn() -> None:
+        set_session_vars(platform="uffici", chat_id="probe-conversation")
+        seen["conversation"] = plugin.session_conversation()
+        # No loop is bound in this process: the handler must answer, and say why.
+        seen["result"] = registry.dispatch(PROBE_TOOL, {})
+
+    worker = threading.Thread(target=turn)
+    worker.start()
+    worker.join(timeout=30)
+    if seen.get("conversation") != "probe-conversation":
+        return "the turn's chat id is not where the plugin's tool handler reads it"
+    try:
+        answered = _json.loads(str(seen.get("result")))
+    except ValueError:
+        answered = {}
+    if answered.get("errorClass") != "unknown_op":
+        return "Hermes did not dispatch the plugin's handler with the call's arguments"
+    tools.apply({})
+    if registry.get_entry(PROBE_TOOL) is not None:
+        return "a tool the plugin disposed is still registered in Hermes"
+    return None
+
+
 def harness_logs_reach_a_root_handler(factory) -> str | None:
     """A turn's INFO line, from Hermes's own logger, reaches the plugin's root handler."""
     import logging
@@ -337,6 +467,8 @@ def main(argv: list[str]) -> int:
         ("working line", lambda: working_line_is_off(manifest)),
         ("memory-review note", lambda: memory_note_is_off(manifest)),
         ("harness logs", lambda: harness_logs_reach_a_root_handler(factory)),
+        ("context slot", lambda: context_reaches_the_system_side_only(factory)),
+        ("platform tools", lambda: platform_tools_reach_the_model(factory, manifest)),
     ]
     for name, check in checks:
         failure = check()

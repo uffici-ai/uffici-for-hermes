@@ -48,7 +48,9 @@ that turns out to be wrong is a defect in this file, and #2014 is where it shows
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
+import os
 import sys
 import types
 from abc import ABC, abstractmethod
@@ -419,6 +421,35 @@ class ClarifyGateway:
 CLARIFY = ClarifyGateway()
 
 
+# ----------------------------------------------------------------- gateway.session_context
+
+#: TRANSCRIBED (v2026.9.24 ``gateway/session_context.py``): the turn's routing ids are
+#: task-local ContextVars, inherited by the ``run_in_executor`` thread a turn's tools run
+#: in, and ``get_session_env`` reads one by its legacy ``HERMES_SESSION_*`` name — the
+#: ContextVar when it was ever set here, else ``os.environ``, else the default. The gateway
+#: binds ``HERMES_SESSION_PLATFORM`` to the source's platform value and
+#: ``HERMES_SESSION_CHAT_ID`` to its ``chat_id`` (``gateway/run.py`` ``_set_session_env``).
+#: Only the two names this plugin reads are reproduced.
+_SESSION_UNSET: Any = object()
+_SESSION_VARS = {
+    name: contextvars.ContextVar(name, default=_SESSION_UNSET)
+    for name in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID")
+}
+
+
+def get_session_env(name: str, default: str = "") -> str:
+    var = _SESSION_VARS.get(name)
+    if var is not None and (value := var.get()) is not _SESSION_UNSET:
+        return value
+    return os.getenv(name, default)
+
+
+def set_session_vars(platform: str = "", chat_id: str = "", **_: Any) -> None:
+    """What the gateway does for a turn, in the calling context."""
+    _SESSION_VARS["HERMES_SESSION_PLATFORM"].set(platform)
+    _SESSION_VARS["HERMES_SESSION_CHAT_ID"].set(chat_id)
+
+
 # ----------------------------------------------------------------- hermes_logging
 
 #: TRANSCRIBED (v2026.9.24 ``hermes_logging.setup_logging`` and ``gateway/run_turn.py``):
@@ -495,11 +526,17 @@ def _install() -> None:
     followup._followup_processing_hooks_apply = _followup_processing_hooks_apply
     followup._run_followup_processing_hook = _run_followup_processing_hook
 
+    session_context = types.ModuleType("gateway.session_context")
+    session_context.get_session_env = get_session_env
+    session_context.set_session_vars = set_session_vars
+
     gateway.config, gateway.session, gateway.platforms = config, session, platforms
+    gateway.session_context = session_context
     gateway.run_turn_followup_ack = followup
     platforms.base, platforms.event = base, event
     for name, module in {
         "gateway": gateway, "gateway.config": config, "gateway.session": session,
+        "gateway.session_context": session_context,
         "gateway.run_turn_followup_ack": followup,
         "gateway.platforms": platforms, "gateway.platforms.base": base,
         "gateway.platforms.event": event, "tools": tools, "tools.approval": approval,

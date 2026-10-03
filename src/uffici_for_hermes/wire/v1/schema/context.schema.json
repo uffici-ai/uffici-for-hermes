@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/context.schema.json",
+  "title": "Context",
+  "description": "What the agent is told before the conversation, composed by the platform: the identity block first, then the organization's and each place's pinned context. The companion forwards it one to one and composes nothing.",
+  "type": "object",
+  "required": [
+    "blocks",
+    "tokens",
+    "bounded"
+  ],
+  "properties": {
+    "blocks": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "scope",
+          "tokens",
+          "text"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Who wrote this level, for the agent."
+          },
+          "scope": {
+            "type": "string",
+            "pattern": "^[a-z][a-z_]{0,31}$",
+            "description": "OPEN: identity, organization, folder, conversation today. A scope the plugin does not know is rendered as a labelled block, never dropped."
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Markdown, verbatim."
+          }
+        }
+      }
+    },
+    "tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Every block's tokens, the identity block's included."
+    },
+    "bounded": {
+      "type": "boolean",
+      "description": "The platform's budget cut some of the context."
+    },
+    "missing": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": [
+          "part",
+          "class",
+          "instruction"
+        ],
+        "properties": {
+          "part": {
+            "type": "string",
+            "pattern": "^[a-z][a-z_]{0,31}$"
+          },
+          "class": {
+            "type": "string",
+            "pattern": "^[a-z][a-z_]{0,63}$"
+          },
+          "instruction": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The sentence the agent relays to the person — rendered inside the context block, never dropped."
+          }
+        }
+      },
+      "description": "A part the brief should have had and does not, named instead of left as a silent gap."
+    }
+  }
+}

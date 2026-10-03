@@ -1,5 +1,5 @@
 # The deterministic model, in the smallest thing that can run it.
-FROM python:3.13-alpine
+FROM python:3.14-alpine
 WORKDIR /app
 COPY server.py /app/server.py
 # Non-root, numeric: this container answers HTTP on a dev network.

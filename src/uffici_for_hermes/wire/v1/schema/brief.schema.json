@@ -91,6 +91,10 @@
         "$ref": "entry.schema.json"
       },
       "description": "(sinceCursor, throughCursor], with the answering agent's OWN entries omitted — those arrive in the opener."
+    },
+    "context": {
+      "$ref": "context.schema.json",
+      "description": "OPTIONAL — absent from an older companion. When present, the plugin places it on the system side of EVERY turn, fresh or resumed, so an edit lands on the next answer."
     }
   }
 }

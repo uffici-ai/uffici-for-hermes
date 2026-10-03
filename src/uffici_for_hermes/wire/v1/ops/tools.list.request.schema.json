@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/tools.list.request.schema.json",
+  "title": "tools.list request",
+  "description": "plugin \u2192 companion, the payload of a `call` with op `tools.list`. The agent's tools for one conversation, as the platform lists them. Sent only to a companion whose hello lists the `tools` feature.",
+  "type": "object",
+  "required": [
+    "conversationId"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "conversationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}

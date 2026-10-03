@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/tools.call.result.schema.json",
+  "title": "tools.call result",
+  "description": "companion \u2192 plugin, the payload of the `result` answering a `tools.call`. `result` is the tool's answer as the platform returned it \u2014 an actionable refusal is a result (`ok: false`, a code, a sentence the model reads), never a call failure. `callUrn` names the call when it ran; a post may cite it.",
+  "type": "object",
+  "required": [
+    "callUrn",
+    "result"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "callUrn": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^urn:uffici:tool_call:[1-9][0-9]{0,17}$"
+    },
+    "result": {}
+  }
+}

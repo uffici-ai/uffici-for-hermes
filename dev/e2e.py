@@ -107,6 +107,36 @@ HERMES_TURN_ERROR = "Agent error in session"
 MOCK_COMPLETION = "[mock] request "
 
 
+#: The context's placement, as the mock prints it per completion — booleans, never text.
+MOCK_SYSTEM_CANARY = "system_canary=True"
+MOCK_USER_CANARY = "user_canary=True"
+MOCK_SYSTEM_MISSING = "system_missing=True"
+
+#: The canary the context fixture carries in an organization block.
+CONTEXT_CANARY = "[context-canary]"
+
+
+def context_failures(mock_log: str, fixture_has_context: bool) -> list[str]:
+    """Why the brief's context did not reach the model as it must; empty for a pass.
+
+    Judged only when the release's fixture DECLARES the canary: a companion released
+    before the context existed has nothing to prove here, and a gate that failed every
+    release until the next one would be a gate nobody trusts.
+    """
+    if not fixture_has_context:
+        return []
+    failures = []
+    if MOCK_SYSTEM_CANARY not in mock_log:
+        failures.append("the context's canary never reached a model's SYSTEM message")
+    if MOCK_USER_CANARY in mock_log:
+        failures.append("the context's canary reached a model on the USER side — it must never")
+    if MOCK_SYSTEM_MISSING not in mock_log:
+        failures.append(
+            "a brief whose context was missing never told the model so on the system side"
+        )
+    return failures
+
+
 def restarts_owed(lines: list[dict], done: int) -> int:
     """How many harness restarts the companion has asked for that this run has not made."""
     return max(0, sum(1 for line in lines if line.get("msg") == RESTART_HARNESS) - done)
@@ -129,11 +159,31 @@ def harness_failures(hermes_log: str, mock_log: str) -> list[str]:
     return failures
 
 
-def verdict_failures(lines: list[dict], exit_code: int) -> list[str]:
+#: The fixture step that expects a tool call to reach the platform.
+EXPECT_TOOL_CALL = "expectToolCall"
+
+
+def fixture_expects_tool_call(fixture: object) -> bool:
+    """Whether the release's script expects a Uffici tool call at all.
+
+    A companion released before the tools existed has nothing to prove here, exactly as
+    with the context canary: the tool tally is judged only when the script asks for it.
+    """
+    steps = fixture.get("steps") if isinstance(fixture, dict) else None
+    return any(
+        isinstance(step, dict) and step.get("step") == EXPECT_TOOL_CALL for step in steps or []
+    )
+
+
+def verdict_failures(
+    lines: list[dict], exit_code: int, *, expects_tool_call: bool = False
+) -> list[str]:
     """Every reason the finished run is not a pass; empty only for a real pass.
 
     Pure, so the judgement is tested on its own: a green run that asserted
-    nothing is the failure this gate exists for.
+    nothing is the failure this gate exists for. With a script that expects a tool
+    call, the companion's own tally must count at least one: an expectation can hold
+    over a step that never ran, and the tally cannot.
     """
     verdict = next((line for line in lines if line.get("msg") == SCRIPT_COMPLETE), None)
     if verdict is None:
@@ -155,19 +205,32 @@ def verdict_failures(lines: list[dict], exit_code: int) -> list[str]:
         failures.append(
             f"the companion dropped the plugin's connection {len(dropped)} time(s): {reasons}"
         )
+    if expects_tool_call:
+        calls = verdict.get("toolCalls")
+        if not _is_count(calls) or calls < 1:
+            shown = calls if calls is not None else "no"
+            failures.append(
+                f"the script expects a tool call and the companion counted {shown} — no"
+                " Uffici tool reached the platform"
+            )
     if exit_code != 0:
         unmet = verdict.get("unmet", "some")
         failures.append(f"the scripted conversation had {unmet} unmet expectation(s)")
     return failures
 
 
-def shipped_log_failures(lines: list[dict]) -> list[str]:
+def shipped_log_failures(lines: list[dict], restarts_made: int) -> list[str]:
     """Whether the run shipped the machine's logs (#2267); empty for a pass.
 
-    All three sources must reach the scripted host, and no shipped line may still
+    All three sources must reach the scripted host; every harness restart the run
+    made must have shipped the dying process's own warning — a harness line at warn
+    or above logged between the restart's ask and the old connection's close
+    (#2313), which a per-source count cannot see; and no shipped line may still
     carry the run's wire token — the one secret a fixture run holds, presented by
     the plugin in every hello, so a line carrying it is a redaction that failed.
     """
+    if not _is_count(restarts_made) or restarts_made < 0:
+        raise TypeError("shipped_log_failures needs the number of restarts the run made")
     reports = [line for line in lines if line.get("msg") == LOGS_SHIPPED]
     if len(reports) != 1:
         return [f"the companion reported what it shipped {len(reports)} time(s), not once"]
@@ -181,11 +244,27 @@ def shipped_log_failures(lines: list[dict]) -> list[str]:
     if not isinstance(canaries, (int, float)) or canaries != CANARIES:
         shown = canaries if canaries is not None else "none"
         failures.append(f"{shown} of the run's {CANARIES} canaries shipped redacted")
+    counted = report.get("restarts")
+    spoke = report.get("restartsWithLastWords")
+    if not _is_count(counted) or counted != restarts_made:
+        shown = counted if counted is not None else "no"
+        failures.append(f"the companion counted {shown} restart(s), the run made {restarts_made}")
+    elif not _is_count(spoke) or spoke != restarts_made:
+        shown = spoke if spoke is not None else "none"
+        failures.append(
+            f"{shown} of the run's {restarts_made} restart(s) shipped the harness's own"
+            " warning before it stopped"
+        )
     leaks = report.get("tokenLeaks")
     if leaks != 0:
         count = leaks if isinstance(leaks, (int, float)) else "an unknown number of"
         failures.append(f"{count} shipped line(s) carry the wire token")
     return failures
+
+
+def _is_count(value: object) -> bool:
+    """A number the companion reported — never a bool, which JSON decoding keeps apart."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def contract_failures(returncode: int, stderr: str) -> list[str]:
@@ -409,10 +488,13 @@ def run(version: str, fixture_dir: Path) -> None:
             raise Failure("the scripted conversation did not finish in time", the_other_side())
         # The companion's log is complete once it has exited.
         lines = log_lines(container_logs(companion))
+        fixture_text = (fixture_dir / "ci" / "wave1.json").read_text()
+        expects_tool_call = fixture_expects_tool_call(json.loads(fixture_text))
         failures = (
-            verdict_failures(lines, exit_code)
-            + shipped_log_failures(lines)
+            verdict_failures(lines, exit_code, expects_tool_call=expects_tool_call)
+            + shipped_log_failures(lines, restarts)
             + harness_failures(container_logs(hermes), container_logs(mock))
+            + context_failures(container_logs(mock), CONTEXT_CANARY in fixture_text)
         )
         if failures:
             raise Failure("; ".join(failures), the_other_side())

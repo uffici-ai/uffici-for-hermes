@@ -21,6 +21,7 @@ from conftest import (
 )
 from uffici_for_hermes import adapter as adapter_module
 from uffici_for_hermes.adapter import CHAT_TYPE, OPENER_HEADER, PLATFORM_NAME, UfficiAdapter
+from uffici_for_hermes.context import CONTEXT_OPEN
 from uffici_for_hermes.wire import WIRE_V1
 
 
@@ -293,6 +294,72 @@ def test_a_second_brief_on_the_same_conversation_is_resumed_and_asks_for_no_open
         assert len(adapter.handled) == 2, "the resumed brief was held for an opener"
         sessions = [a["session"] for a in wire.of_type("ack")]
         assert sessions == ["fresh", "resumed"]
+
+    run(scenario())
+
+
+def test_the_context_lands_system_side_and_never_user_side() -> None:
+    """🔴 The platform's context belongs in ``channel_prompt`` — the system side,
+    added at API time and never stored in the session. In ``channel_context`` it
+    would enter the transcript as something the person said."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        await adapter._on_frame(golden("brief-with-context"))
+        event = adapter.handled[0]
+
+        assert event.channel_prompt is not None, "the context never reached the system side"
+        assert event.channel_prompt.startswith(CONTEXT_OPEN)
+        assert "Never quote prices." in event.channel_prompt
+        assert CONTEXT_OPEN not in (event.channel_context or ""), (
+            "the context reached the user-side slot"
+        )
+        assert "Never quote prices." not in (event.channel_context or "")
+        assert "Never quote prices." not in event.text
+
+    run(scenario())
+
+
+def test_a_resumed_brief_carries_the_context_too() -> None:
+    """Every brief, not only a fresh one: an edit to the context lands on the very
+    next answer, without waiting for a new session."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        await adapter._on_frame(golden("brief-with-context"))
+        source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
+        adapter._session_store._entries[build_session_key(source)] = object()
+
+        edited = golden("brief-with-context")
+        edited["requestId"] = "req_2"
+        edited["context"]["blocks"][1]["text"] = "Quote prices only from the 2026 list."
+        await adapter._on_frame(edited)
+
+        assert len(adapter.handled) == 2
+        assert "2026 list" in (adapter.handled[1].channel_prompt or "")
+
+    run(scenario())
+
+
+def test_a_missing_context_part_reaches_the_agent_as_its_instruction() -> None:
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        brief = golden("brief-context-missing")
+        await adapter._on_frame(brief)
+        prompt = adapter.handled[0].channel_prompt or ""
+        assert brief["context"]["missing"][0]["instruction"] in prompt
+
+    run(scenario())
+
+
+def test_a_brief_without_context_leaves_the_system_side_alone() -> None:
+    """An older companion sends no context: nothing is placed, and the static
+    platform hint stands alone exactly as before."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        await adapter._on_frame(golden("brief"))
+        assert adapter.handled[0].channel_prompt is None
 
     run(scenario())
 

@@ -1,0 +1,49 @@
+{
+  "v": 1,
+  "type": "brief",
+  "requestId": "req_01J8ZQ7X4K2M9P0Q",
+  "conversationId": "conv_01J8ZQ7X4K2M9P0Q",
+  "reason": "mentioned",
+  "cause": {
+    "entryId": "entry_2",
+    "authorId": "member_2"
+  },
+  "deadline": "2026-09-17T14:10:00Z",
+  "sinceCursor": "c0001",
+  "throughCursor": "c0002",
+  "resetSession": false,
+  "delta": [
+    {
+      "id": "entry_2",
+      "cursor": "c0002",
+      "at": "2026-09-17T14:02:00Z",
+      "author": {
+        "type": "member",
+        "id": "member_2",
+        "label": "Ana Marques",
+        "self": false
+      },
+      "kind": "message",
+      "text": "Can you check the Lisbon invoice?"
+    }
+  ],
+  "context": {
+    "blocks": [
+      {
+        "name": "Identity",
+        "scope": "identity",
+        "tokens": 31,
+        "text": "You are an AI agent, not a human.\nNever present yourself as a human.\nThis conversation is in the organization's portal, where you are shown as an AI agent.\nYou are Smith (@smith). Answer in English unless the person writes in another language."
+      }
+    ],
+    "tokens": 31,
+    "bounded": false,
+    "missing": [
+      {
+        "part": "context",
+        "class": "knowledge_unavailable",
+        "instruction": "The organization's and this place's context were unavailable because of a system problem; tell the person you are working without them."
+      }
+    ]
+  }
+}

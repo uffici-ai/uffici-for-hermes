@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/tools.call.request.schema.json",
+  "title": "tools.call request",
+  "description": "plugin \u2192 companion, the payload of a `call` with op `tools.call`. One tool call on the request the plugin is answering. The companion refuses a request it did not ring (`not_permitted`) and never retries a call once sent: a tool is not idempotent.",
+  "type": "object",
+  "required": [
+    "requestId",
+    "name",
+    "arguments"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "arguments": {
+      "type": "object"
+    }
+  }
+}
