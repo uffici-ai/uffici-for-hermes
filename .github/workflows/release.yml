@@ -91,5 +91,14 @@ jobs:
             --certificate-identity-regexp 'https://github.com/uffici-ai/uffici-for-hermes/' \\
             --certificate-oidc-issuer https://token.actions.githubusercontent.com uffici-for-hermes.tar.gz
           \`\`\`"
-          gh release create "$TAG" --title "$TAG" --notes "$notes" \
+          # 🔴 A tag with a hyphen (`v0.9.0-rc.1`, `v0.10.0-dev.4`) is a
+          # PRERELEASE: `releases/latest` skips prereleases, and it is what
+          # install.sh and `uffici setup` fall back to, so an rc or a dev train
+          # must never become every installer's latest. The companion does the
+          # same through goreleaser's `prerelease: auto`.
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$TAG" --title "$TAG" --notes "$notes" "${prerelease[@]}" \
             dist/uffici-for-hermes.tar.gz dist/checksums.txt dist/uffici-for-hermes.tar.gz.sigstore.json
