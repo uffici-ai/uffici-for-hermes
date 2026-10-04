@@ -198,16 +198,29 @@ class BasePlatformAdapter(ABC):
         self._session_store = session_store
 
     def build_source(
-        self, chat_id: str, chat_name: Optional[str] = None, chat_type: str = "dm",
-        user_id: Optional[str] = None, user_name: Optional[str] = None, **_: Any,
+        self,
+        chat_id: str,
+        chat_name: Optional[str] = None,
+        chat_type: str = "dm",
+        user_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+        **_: Any,
     ) -> SessionSource:
         return SessionSource(
-            platform=self.platform, chat_id=str(chat_id), chat_name=chat_name,
-            chat_type=chat_type, user_id=str(user_id) if user_id else None, user_name=user_name,
+            platform=self.platform,
+            chat_id=str(chat_id),
+            chat_name=chat_name,
+            chat_type=chat_type,
+            user_id=str(user_id) if user_id else None,
+            user_name=user_name,
         )
 
     async def send_private_notice(
-        self, chat_id: str, user_id: Optional[str], content: str, reply_to: Optional[str] = None,
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        content: str,
+        reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> Any:
         """Transcribed from base.py (0.21.5): the default is a normal send."""
@@ -216,8 +229,13 @@ class BasePlatformAdapter(ABC):
         )
 
     async def send_clarify(
-        self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
-        session_key: str, metadata: Optional[dict[str, Any]] = None,
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Transcribed from base.py (v2026.9.24, :2852): the TEXT fallback — a numbered
         list, ``mark_awaiting_text`` so the gateway's text intercept takes the next
@@ -243,7 +261,10 @@ class BasePlatformAdapter(ABC):
 
     @abstractmethod
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None,
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult: ...
 
@@ -270,13 +291,23 @@ class BasePlatformAdapter(ABC):
         return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
 
     async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True,
-        allow_session: bool = True, smart_denied: bool = False,
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         prompt = ExecApprovalPrompt(
-            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
+            chat_id=chat_id,
+            session_key=session_key,
+            metadata=metadata,
+            command=str(command or ""),
+            description=description,
+            smart_denied=smart_denied,
             text=f"Hermes wants to run a command that needs your OK: {command}",
             actions=[("Allow Once", "once", "primary"), ("Deny", "deny", "danger")],
         )
@@ -301,8 +332,12 @@ class ApprovalQueue:
         self.resolved: list[dict[str, Any]] = []
 
     def resolve_gateway_approval(
-        self, session_key: str, choice: str, resolve_all: bool = False,
-        reason: Optional[str] = None, request_id: Optional[str] = None,
+        self,
+        session_key: str,
+        choice: str,
+        resolve_all: bool = False,
+        reason: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> int:
         queue = self.pending.get(session_key) or []
         if not queue:
@@ -354,20 +389,26 @@ class ClarifyGateway:
         self.calls: list[tuple[str, ...]] = []
 
     def register(
-        self, clarify_id: str, session_key: str, question: str,
-        choices: Optional[list[str]], multi_select: bool = False,
+        self,
+        clarify_id: str,
+        session_key: str,
+        question: str,
+        choices: Optional[list[str]],
+        multi_select: bool = False,
     ) -> ClarifyEntry:
         entry = ClarifyEntry(
-            clarify_id, session_key, question, list(choices) if choices else None,
-            bool(multi_select) and bool(choices), awaiting_text=not bool(choices),
+            clarify_id,
+            session_key,
+            question,
+            list(choices) if choices else None,
+            bool(multi_select) and bool(choices),
+            awaiting_text=not bool(choices),
         )
         self.entries[clarify_id] = entry
         return entry
 
     def _pending(self, session_key: str) -> list[ClarifyEntry]:
-        return [
-            e for e in self.entries.values() if e.session_key == session_key and not e.resolved
-        ]
+        return [e for e in self.entries.values() if e.session_key == session_key and not e.resolved]
 
     def resolve_gateway_clarify(self, clarify_id: str, response: str) -> bool:
         self.calls.append(("resolve", clarify_id, response))
@@ -516,8 +557,11 @@ def _install() -> None:
     tools.approval = approval
     clarify = types.ModuleType("tools.clarify_gateway")
     for name in (
-        "resolve_gateway_clarify", "resolve_text_response_for_session", "mark_awaiting_text",
-        "has_pending", "clear_session",
+        "resolve_gateway_clarify",
+        "resolve_text_response_for_session",
+        "mark_awaiting_text",
+        "has_pending",
+        "clear_session",
     ):
         setattr(clarify, name, getattr(CLARIFY, name))
     tools.clarify_gateway = clarify
@@ -535,11 +579,16 @@ def _install() -> None:
     gateway.run_turn_followup_ack = followup
     platforms.base, platforms.event = base, event
     for name, module in {
-        "gateway": gateway, "gateway.config": config, "gateway.session": session,
+        "gateway": gateway,
+        "gateway.config": config,
+        "gateway.session": session,
         "gateway.session_context": session_context,
         "gateway.run_turn_followup_ack": followup,
-        "gateway.platforms": platforms, "gateway.platforms.base": base,
-        "gateway.platforms.event": event, "tools": tools, "tools.approval": approval,
+        "gateway.platforms": platforms,
+        "gateway.platforms.base": base,
+        "gateway.platforms.event": event,
+        "tools": tools,
+        "tools.approval": approval,
         "tools.clarify_gateway": clarify,
     }.items():
         sys.modules.setdefault(name, module)

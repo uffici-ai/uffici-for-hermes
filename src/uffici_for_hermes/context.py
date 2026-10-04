@@ -28,8 +28,12 @@ logger = logging.getLogger(__name__)
 CONTEXT_OPEN = "<<<uffici-context>>>"
 CONTEXT_CLOSE = "<<</uffici-context>>>"
 
-#: The scopes this plugin names itself; any other scope is still rendered.
-KNOWN_SCOPES: frozenset[str] = frozenset({"identity", "organization", "folder", "conversation"})
+#: The scopes this plugin names itself; any other scope is still rendered. A card
+#: conversation's brief carries the ``card`` block — the work the card asks for, on the
+#: system side so no lane instruction ever enters the session's history.
+KNOWN_SCOPES: frozenset[str] = frozenset(
+    {"identity", "organization", "folder", "conversation", "card"}
+)
 
 #: Said when the brief carried a context this plugin could not read.
 UNREADABLE_INSTRUCTION = (

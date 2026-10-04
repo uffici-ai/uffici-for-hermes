@@ -106,7 +106,8 @@ def test_the_plugin_holds_no_window_constant() -> None:
     numbers = [
         node.value
         for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, int)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, int)
         and not isinstance(node.value, bool)
     ]
     # Non-vacuity: the module does contain integer literals (the bounds checks),

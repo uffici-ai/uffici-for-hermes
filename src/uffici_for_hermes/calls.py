@@ -148,7 +148,11 @@ class CallClient:
         if not isinstance(call_id, str) or not 1 <= len(call_id) <= MAX_CALL_ID_CHARS:
             raise ValueError(f"a callId must be 1–{MAX_CALL_ID_CHARS} characters")
         frame: dict[str, Any] = {
-            "v": 1, "type": "call", "callId": call_id, "op": op, "deadlineMs": deadline_ms,
+            "v": 1,
+            "type": "call",
+            "callId": call_id,
+            "op": op,
+            "deadlineMs": deadline_ms,
         }
         if payload is not None:
             frame["payload"] = payload
@@ -183,8 +187,12 @@ class CallClient:
         logger.log(
             logging.DEBUG if op == "logs.push" else logging.INFO,
             "uffici: call answered",
-            extra={"op": op, "callId": call_id, "class": answered.error_class or "ok",
-                   "requestBytes": size},
+            extra={
+                "op": op,
+                "callId": call_id,
+                "class": answered.error_class or "ok",
+                "requestBytes": size,
+            },
         )
         return answered
 

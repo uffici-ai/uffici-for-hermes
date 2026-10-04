@@ -170,13 +170,17 @@ def catalog_entries(payload: Any) -> dict[str, dict[str, Any]] | None:
             skipped += 1
             continue
         entries[name] = {
-            "name": name, "description": description,
-            "parameters": parameters, "permission": permission,
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+            "permission": permission,
         }
     if skipped:
         logger.warning(
             "uffici: %d catalog entr%s outside the wire's shape were not offered",
-            skipped, "y" if skipped == 1 else "ies", extra={"skipped": skipped},
+            skipped,
+            "y" if skipped == 1 else "ies",
+            extra={"skipped": skipped},
         )
     return entries
 
@@ -272,8 +276,9 @@ class PlatformTools:
                 "tools.list", {"conversationId": conversation_id}, deadline_ms=LIST_DEADLINE_MS
             )
         except Exception as exc:  # noqa: BLE001 — a refresh never fails a turn
-            logger.warning("uffici: the tool catalog could not be asked for (%s)",
-                           type(exc).__name__)
+            logger.warning(
+                "uffici: the tool catalog could not be asked for (%s)", type(exc).__name__
+            )
             return
         if not answered.ok:
             # 🔴 The tools already registered STAY: a failed read says nothing about the
@@ -281,7 +286,9 @@ class PlatformTools:
             # that was about to use them. The next refresh asks again.
             logger.warning(
                 "uffici: the tool catalog could not be read (%s); keeping the %d tool(s) "
-                "already offered", answered.error_class, len(self._catalog),
+                "already offered",
+                answered.error_class,
+                len(self._catalog),
                 extra={"class": answered.error_class},
             )
             return
@@ -310,26 +317,38 @@ class PlatformTools:
             schema = hermes_schema(entry)
             try:
                 handle = self._register_tool(
-                    name=name, toolset=TOOLSET, schema=schema, handler=self._handler_for(name),
-                    description=schema["description"], emoji="🏢",
+                    name=name,
+                    toolset=TOOLSET,
+                    schema=schema,
+                    handler=self._handler_for(name),
+                    description=schema["description"],
+                    emoji="🏢",
                 )
             except Exception as exc:  # noqa: BLE001 — one refused tool never costs the rest
-                logger.warning("uffici: Hermes refused the tool %s (%s)", name,
-                               type(exc).__name__, extra={"tool": name})
+                logger.warning(
+                    "uffici: Hermes refused the tool %s (%s)",
+                    name,
+                    type(exc).__name__,
+                    extra={"tool": name},
+                )
                 continue
             if handle is None:
                 # Hermes returns None when the name is already another toolset's.
                 logger.warning(
-                    "uffici: the tool %s was not offered — Hermes already has a tool of that "
-                    "name", name, extra={"tool": name},
+                    "uffici: the tool %s was not offered — Hermes already has a tool of that name",
+                    name,
+                    extra={"tool": name},
                 )
                 continue
             self._catalog[name] = entry
             self._handles[name] = handle
         if added or removed or changed:
             logger.info(
-                "uffici: offering %d Uffici tool(s) to Hermes (%d added, %d removed, %d "
-                "changed)", len(self._catalog), added, removed, changed,
+                "uffici: offering %d Uffici tool(s) to Hermes (%d added, %d removed, %d changed)",
+                len(self._catalog),
+                added,
+                removed,
+                changed,
                 extra={"tools": len(self._catalog)},
             )
 
@@ -342,8 +361,12 @@ class PlatformTools:
         try:
             dispose()
         except Exception as exc:  # noqa: BLE001 — the handler refuses a tool that left
-            logger.warning("uffici: Hermes would not remove the tool %s (%s)", name,
-                           type(exc).__name__, extra={"tool": name})
+            logger.warning(
+                "uffici: Hermes would not remove the tool %s (%s)",
+                name,
+                type(exc).__name__,
+                extra={"tool": name},
+            )
 
     # ------------------------------------------------------------------ calls
 
@@ -368,8 +391,10 @@ class PlatformTools:
             running = None
         if running is loop:
             # Blocking the loop the answer has to arrive on would hang the gateway.
-            logger.error("uffici: a tool was dispatched on the event loop itself; refused",
-                         extra={"tool": name})
+            logger.error(
+                "uffici: a tool was dispatched on the event loop itself; refused",
+                extra={"tool": name},
+            )
             return _refusal(CANNOT_WAIT_HERE)
         future = asyncio.run_coroutine_threadsafe(self.invoke(conversation_id, name, args), loop)
         try:
@@ -388,20 +413,25 @@ class PlatformTools:
             # guess one, and the platform would attribute it to whoever that turn served.
             logger.warning(
                 "uffici: the tool %s was called outside a Uffici request; refused",
-                name, extra={"tool": name},
+                name,
+                extra={"tool": name},
             )
             return _refusal(OUTSIDE_A_REQUEST)
         if not self._enabled():
             return _refusal(INSTRUCTIONS["unknown_op"], "unknown_op")
         answered = await self._call(
             "tools.call",
-            {"requestId": request_id, "name": name,
-             "arguments": args if isinstance(args, dict) else {}},
+            {
+                "requestId": request_id,
+                "name": name,
+                "arguments": args if isinstance(args, dict) else {},
+            },
             deadline_ms=CALL_DEADLINE_MS,
         )
         if not answered.ok:
-            return _refusal(answered.instruction or INSTRUCTIONS["upstream_failed"],
-                            answered.error_class)
+            return _refusal(
+                answered.instruction or INSTRUCTIONS["upstream_failed"], answered.error_class
+            )
         payload = answered.payload or {}
         urn = payload.get("callUrn")
         # 🔴 The call's name is OPAQUE here: any non-empty string is cited as it came.
@@ -414,7 +444,9 @@ class PlatformTools:
             if urn not in cited and len(cited) < MAX_CITATIONS:
                 cited.append(urn)
         logger.info(
-            "uffici: the tool %s ran on request %s (%s)", name, request_id,
+            "uffici: the tool %s ran on request %s (%s)",
+            name,
+            request_id,
             "cited" if urn else "not run",
             extra={"tool": name, "requestId": request_id},
         )
@@ -443,10 +475,12 @@ class PlatformTools:
         done = self._activity.setdefault(request_id, [])
         if len(done) >= MAX_ACTIVITY:
             return
-        done.append({
-            "tool": name[:MAX_ACTIVITY_TOOL_CHARS],
-            "summary": ACTIVITY_SUMMARY_FAILED if status == "error" else ACTIVITY_SUMMARY_OK,
-        })
+        done.append(
+            {
+                "tool": name[:MAX_ACTIVITY_TOOL_CHARS],
+                "summary": ACTIVITY_SUMMARY_FAILED if status == "error" else ACTIVITY_SUMMARY_OK,
+            }
+        )
 
     def take_extras(self, request_id: str) -> dict[str, Any]:
         """What the request's next post carries — its citations and activity — handed over
@@ -466,9 +500,7 @@ class PlatformTools:
         if cited := extras.get("citations"):
             self._citations[request_id] = cited + self._citations.get(request_id, [])
         if done := extras.get("activity"):
-            self._activity[request_id] = (done + self._activity.get(request_id, []))[
-                :MAX_ACTIVITY
-            ]
+            self._activity[request_id] = (done + self._activity.get(request_id, []))[:MAX_ACTIVITY]
 
     def forget(self, request_id: str) -> None:
         self._citations.pop(request_id, None)

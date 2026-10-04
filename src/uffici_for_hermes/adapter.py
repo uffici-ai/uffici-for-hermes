@@ -88,6 +88,7 @@ def plugin_version(package_dir: Path | None = None) -> str:
         return DEV_VERSION
     return version
 
+
 #: 🔴 Every conversation is a ``dm``. Hermes keys a ``dm`` with a ``chat_id`` on
 #: that id alone, so one Uffici conversation is one Hermes session however many
 #: people and agents write in it — which is what the transcript already is. A
@@ -155,12 +156,14 @@ SHUTDOWN_INTERRUPT_REASONS = frozenset({"restart_timeout", "shutdown_timeout"})
 #: count the message as handled. Exact strings, pinned against the real Hermes by
 #: ``dev/hermes_contract.py`` so a reworded release fails the probe rather than this
 #: list silently matching nothing.
-HERMES_UNPROCESSED_REPLIES = frozenset({
-    "⚠️ Your message was interrupted before processing started "
-    "(likely by a recent /stop). Please send it again.",
-    "⚠️ Your message wasn't processed (the previous turn was still "
-    "being cleaned up). Please send it again.",
-})
+HERMES_UNPROCESSED_REPLIES = frozenset(
+    {
+        "⚠️ Your message was interrupted before processing started "
+        "(likely by a recent /stop). Please send it again.",
+        "⚠️ Your message wasn't processed (the previous turn was still "
+        "being cleaned up). Please send it again.",
+    }
+)
 
 #: How often a close that found Hermes still working on the turn looks again.
 #:
@@ -382,8 +385,7 @@ class UfficiAdapter(BasePlatformAdapter):
                 # Hermes's resolver can ask a provider; one that hangs costs a retry of the
                 # connect, never a gateway start that waits for ever.
                 raise BudgetUnavailable(
-                    "Hermes did not report its context window in time; the next connect "
-                    "asks again"
+                    "Hermes did not report its context window in time; the next connect asks again"
                 ) from exc
             budget = context_budget_tokens(window, resolve_share(self._get_env))
         except (WireConfigError, BudgetUnavailable) as exc:
@@ -757,11 +759,7 @@ class UfficiAdapter(BasePlatformAdapter):
         conversation_id = str(chat_id)
         request_id = self._open_request.get(conversation_id)
         card = _question_card(question, choices, clarify_id, self._is_multi_select(clarify_id))
-        if (
-            request_id is None
-            or card is None
-            or FEATURE_QUESTION not in self._companion_features
-        ):
+        if request_id is None or card is None or FEATURE_QUESTION not in self._companion_features:
             return await BasePlatformAdapter.send_clarify(
                 self, chat_id, question, choices, clarify_id, session_key, metadata
             )
@@ -786,7 +784,8 @@ class UfficiAdapter(BasePlatformAdapter):
         self._forget(request_id, keep_chain=True)
         logger.info(
             "uffici: request %s asked a question on the card (%d choice(s)) and was settled",
-            request_id, len(offered["choices"]),
+            request_id,
+            len(offered["choices"]),
             extra={"requestId": request_id, "conversationId": conversation_id},
         )
         return SendResult(success=True, message_id=request_id)
@@ -802,7 +801,8 @@ class UfficiAdapter(BasePlatformAdapter):
                 del self._pending_questions[conversation_id]
                 logger.info(
                     "uffici: a question on conversation %s ended without an answer",
-                    conversation_id, extra={"conversationId": conversation_id},
+                    conversation_id,
+                    extra={"conversationId": conversation_id},
                 )
 
     def _is_multi_select(self, clarify_id: str) -> bool:
@@ -835,7 +835,8 @@ class UfficiAdapter(BasePlatformAdapter):
         """
         logger.debug(
             "uffici: a Hermes status line was not posted (%s, %d chars)",
-            str(status_key), len(content or ""),
+            str(status_key),
+            len(content or ""),
             extra={"conversationId": str(chat_id)},
         )
         return SendResult(success=True)
@@ -873,9 +874,7 @@ class UfficiAdapter(BasePlatformAdapter):
             # would be a frame the companion refuses — taking the connection
             # with it. It closes as `empty` instead, which is an outcome the
             # platform understands.
-            logger.info(
-                "uffici: an empty reply was not posted", extra={"requestId": request_id}
-            )
+            logger.info("uffici: an empty reply was not posted", extra={"requestId": request_id})
             return SendResult(success=False, error="empty reply")
         if text.strip() in HERMES_UNPROCESSED_REPLIES:
             # 🔴 #2306: Hermes's "send it again" for a turn its agent never ran. Not an
@@ -884,7 +883,8 @@ class UfficiAdapter(BasePlatformAdapter):
             self._unprocessed.add(request_id)
             logger.info(
                 "uffici: Hermes's never-processed reply was not posted (%d chars)",
-                len(text), extra={"requestId": request_id},
+                len(text),
+                extra={"requestId": request_id},
             )
             return SendResult(success=True, message_id=request_id)
         if len(text) > POST_TEXT_MAX:
@@ -971,9 +971,7 @@ class UfficiAdapter(BasePlatformAdapter):
         answered request sat open until the platform's deadline cancelled it (#2246).
         """
 
-    async def on_processing_complete(
-        self, event: MessageEvent, outcome: ProcessingOutcome
-    ) -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """The turn ended: close its request.
 
         Posts went out as they were produced, so this frame only says HOW it
@@ -1025,7 +1023,9 @@ class UfficiAdapter(BasePlatformAdapter):
                     logger.warning(
                         "uffici: request %s is closing although Hermes still shows its "
                         "session busy after %.0fs",
-                        request_id, waited, extra={"requestId": request_id},
+                        request_id,
+                        waited,
+                        extra={"requestId": request_id},
                     )
                     break
                 await asyncio.sleep(BUSY_RECHECK_SECONDS)
@@ -1066,7 +1066,8 @@ class UfficiAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 — a harness internal; never fatal to a disconnect
             logger.warning(
                 "uffici: could not read Hermes's session record for request %s",
-                request_id, extra={"requestId": request_id},
+                request_id,
+                extra={"requestId": request_id},
             )
             return False
         return bool(getattr(entry, "resume_pending", False)) and (
@@ -1100,7 +1101,8 @@ class UfficiAdapter(BasePlatformAdapter):
             if self._interrupted_by_shutdown(request_id):
                 logger.info(
                     "uffici: request %s was cut by the restart; leaving it to be redelivered",
-                    request_id, extra={"requestId": request_id},
+                    request_id,
+                    extra={"requestId": request_id},
                 )
                 continue
             task = self._settling.pop(request_id)
@@ -1119,6 +1121,8 @@ class UfficiAdapter(BasePlatformAdapter):
             await self._on_opener(frame)
         elif kind == "cancel":
             await self._on_cancel(frame)
+        elif kind == "release":
+            await self._on_release(frame)
         elif kind == "result":
             self._calls.on_result(frame)
         else:
@@ -1142,13 +1146,19 @@ class UfficiAdapter(BasePlatformAdapter):
         if request_id in self._conversation_of or request_id in self._awaiting_opener:
             logger.info(
                 "uffici: brief %s for conversation %s was redelivered",
-                request_id, conversation_id,
+                request_id,
+                conversation_id,
                 extra={"requestId": request_id, "conversationId": conversation_id},
             )
             session = "fresh" if request_id in self._awaiting_opener else "resumed"
             await self._send(
-                {"v": 1, "type": "ack", "requestId": request_id,
-                 "outcome": "accepted", "session": session}
+                {
+                    "v": 1,
+                    "type": "ack",
+                    "requestId": request_id,
+                    "outcome": "accepted",
+                    "session": session,
+                }
             )
             return
 
@@ -1208,8 +1218,11 @@ class UfficiAdapter(BasePlatformAdapter):
         self._tools.kick(conversation_id)
         logger.info(
             "uffici: brief %s opened on conversation %s (%s, %d delta entr%s)",
-            request_id, conversation_id, "fresh" if fresh else "resumed",
-            len(delta), "y" if len(delta) == 1 else "ies",
+            request_id,
+            conversation_id,
+            "fresh" if fresh else "resumed",
+            len(delta),
+            "y" if len(delta) == 1 else "ies",
             extra={"requestId": request_id, "conversationId": conversation_id},
         )
 
@@ -1229,8 +1242,11 @@ class UfficiAdapter(BasePlatformAdapter):
             self._awaiting_opener[request_id] = {"event": event, "deadline": frame.get("deadline")}
             await self._send(
                 {
-                    "v": 1, "type": "ack", "requestId": request_id,
-                    "outcome": "accepted", "session": "fresh",
+                    "v": 1,
+                    "type": "ack",
+                    "requestId": request_id,
+                    "outcome": "accepted",
+                    "session": "fresh",
                 }
             )
             return
@@ -1249,8 +1265,11 @@ class UfficiAdapter(BasePlatformAdapter):
         # business, exactly as on the fresh path.
         await self._send(
             {
-                "v": 1, "type": "ack", "requestId": request_id,
-                "outcome": "accepted", "session": "resumed",
+                "v": 1,
+                "type": "ack",
+                "requestId": request_id,
+                "outcome": "accepted",
+                "session": "resumed",
             }
         )
         await self._admit(event, request_id)
@@ -1282,8 +1301,13 @@ class UfficiAdapter(BasePlatformAdapter):
             # cancel would end the person's question. Closed `cancelled` at once instead:
             # that leaves the offset, so the ring that brings the answer re-covers it.
             await self._send(
-                {"v": 1, "type": "ack", "requestId": request_id,
-                 "outcome": "accepted", "session": "resumed"}
+                {
+                    "v": 1,
+                    "type": "ack",
+                    "requestId": request_id,
+                    "outcome": "accepted",
+                    "session": "resumed",
+                }
             )
             await self._send(
                 {"v": 1, "type": "done", "requestId": request_id, "outcome": "cancelled"}
@@ -1291,7 +1315,8 @@ class UfficiAdapter(BasePlatformAdapter):
             self._forget(request_id)
             logger.info(
                 "uffici: brief %s was held — the agent is waiting on a person's answer",
-                request_id, extra={"requestId": request_id, "conversationId": conversation_id},
+                request_id,
+                extra={"requestId": request_id, "conversationId": conversation_id},
             )
             return True
         if len([e for e in delta if isinstance(e, dict)]) > 1:
@@ -1308,12 +1333,18 @@ class UfficiAdapter(BasePlatformAdapter):
         self._open_request[conversation_id] = request_id
         self._posts.setdefault(request_id, 0)
         await self._send(
-            {"v": 1, "type": "ack", "requestId": request_id,
-             "outcome": "accepted", "session": "resumed"}
+            {
+                "v": 1,
+                "type": "ack",
+                "requestId": request_id,
+                "outcome": "accepted",
+                "session": "resumed",
+            }
         )
         logger.info(
             "uffici: brief %s answered the question request %s asked; the turn carries on",
-            request_id, pending["askedBy"],
+            request_id,
+            pending["askedBy"],
             extra={"requestId": request_id, "conversationId": conversation_id},
         )
         return True
@@ -1386,11 +1417,54 @@ class UfficiAdapter(BasePlatformAdapter):
         if refused:
             await self._send(
                 {
-                    "v": 1, "type": "done", "requestId": request_id,
-                    "outcome": "error", "errorClass": "harness_error",
+                    "v": 1,
+                    "type": "done",
+                    "requestId": request_id,
+                    "outcome": "error",
+                    "errorClass": "harness_error",
                 }
             )
             self._forget(request_id)
+
+    async def _on_release(self, frame: dict[str, Any]) -> None:
+        """The platform says this agent may let go of a conversation (#2356).
+
+        Its lane pass on a card ended, or the card was archived or deleted: the
+        conversation's Hermes session is reset and what this plugin remembers of
+        it forgotten, so nothing of the pass carries into the next one.
+
+        🔴 A release withdraws NO request. The platform cancels an open one first,
+        and a turn still open here is the cancel's to stop — resetting a session
+        under a running turn would pull its history out from under it. Then the
+        session is LEFT, which costs memory, never an answer: the next arrival
+        rings with ``resetSession`` anyway.
+        """
+        conversation_id = str(frame.get("conversationId") or "")
+        reason = str(frame.get("reason") or "unknown")
+        if not conversation_id:
+            logger.warning("uffici: a release without a conversation was discarded")
+            return
+        if conversation_id in self._open_request:
+            logger.info(
+                "uffici: release of conversation %s (%s) left to its open request",
+                conversation_id,
+                reason,
+                extra={"conversationId": conversation_id},
+            )
+            return
+        for request_id, held in list(self._conversation_of.items()):
+            if held == conversation_id:
+                self._forget(request_id)
+        pending = self._pending_questions.pop(conversation_id, None)
+        if pending is not None:
+            self._release_questions(pending["sessionKey"])
+        self._reset_session(self.build_source(chat_id=conversation_id, chat_type=CHAT_TYPE))
+        logger.info(
+            "uffici: released conversation %s (%s)",
+            conversation_id,
+            reason,
+            extra={"conversationId": conversation_id},
+        )
 
     async def _on_cancel(self, frame: dict[str, Any]) -> None:
         """A withdrawal becomes Hermes's own stop.
@@ -1485,7 +1559,8 @@ class UfficiAdapter(BasePlatformAdapter):
         except Exception as exc:  # noqa: BLE001 — a moved internal is a fallback
             logger.warning(
                 "uffici: a pending question could not be released (%s); the stop may wait "
-                "for Hermes's own timeout", type(exc).__name__,
+                "for Hermes's own timeout",
+                type(exc).__name__,
             )
             return 0
         if released:
@@ -1626,9 +1701,8 @@ def _question_card(
     if not text or not QUESTION_ID_RE.match(str(clarify_id or "")):
         return None
     offered = [str(choice).strip() for choice in (choices or [])]
-    if (
-        len(offered) > QUESTION_MAX_CHOICES
-        or any(not choice or _utf16_len(choice) > QUESTION_CHOICE_MAX_CHARS for choice in offered)
+    if len(offered) > QUESTION_MAX_CHOICES or any(
+        not choice or _utf16_len(choice) > QUESTION_CHOICE_MAX_CHARS for choice in offered
     ):
         return None
     return text[:POST_TEXT_MAX], {
@@ -1651,11 +1725,16 @@ def _done_frame(request_id: str, outcome: ProcessingOutcome, posts: int) -> dict
         # 🔴 An error CLASS, never the provider's message: that text is the
         # model's, or the provider's, and it travels to the platform's audit.
         return {
-            "v": 1, "type": "done", "requestId": request_id,
-            "outcome": "error", "errorClass": "harness_error",
+            "v": 1,
+            "type": "done",
+            "requestId": request_id,
+            "outcome": "error",
+            "errorClass": "harness_error",
         }
     return {
-        "v": 1, "type": "done", "requestId": request_id,
+        "v": 1,
+        "type": "done",
+        "requestId": request_id,
         "outcome": "answered" if posts else "empty",
     }
 

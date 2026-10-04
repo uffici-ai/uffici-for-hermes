@@ -101,10 +101,16 @@ def test_an_error_result_carries_its_class_instruction_and_upstream() -> None:
         client = CallClient(outbox.send)
         task = asyncio.create_task(client.call("memory.recall", deadline_ms=5000))
         await asyncio.sleep(0)
-        client.on_result(result(outbox.frames[0]["callId"], error={
-            "class": "not_permitted", "instruction": "Memory is off; tell the person.",
-            "upstream": {"class": "memory_disabled"},
-        }))
+        client.on_result(
+            result(
+                outbox.frames[0]["callId"],
+                error={
+                    "class": "not_permitted",
+                    "instruction": "Memory is off; tell the person.",
+                    "upstream": {"class": "memory_disabled"},
+                },
+            )
+        )
         answered = await task
         assert not answered.ok
         assert answered.error_class == "not_permitted"
@@ -265,8 +271,14 @@ def _call_of_exactly(size: int) -> tuple[CallClient, Outbox, dict]:
     """
     outbox = Outbox()
     client = CallClient(outbox.send, new_id=lambda: "c-bound")
-    frame = {"v": 1, "type": "call", "callId": "c-bound", "op": "memory.remember",
-             "deadlineMs": 5000, "payload": {"text": ""}}
+    frame = {
+        "v": 1,
+        "type": "call",
+        "callId": "c-bound",
+        "op": "memory.remember",
+        "deadlineMs": 5000,
+        "payload": {"text": ""},
+    }
     base = encoded_size(frame)
     text = "ç" * ((size - base) // 2) + "x" * ((size - base) % 2)
     payload = {"text": text}

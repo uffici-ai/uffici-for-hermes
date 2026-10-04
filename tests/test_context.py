@@ -68,6 +68,26 @@ def test_an_unknown_scope_still_renders_under_its_name_and_scope() -> None:
     assert "## Skills (skill_index)" in rendered and "- triage" in rendered
 
 
+def test_a_card_block_renders_as_a_first_class_section() -> None:
+    """A card conversation's brief: the Card block is headed by its name alone, like
+    every known scope, and its text is kept line for line inside the one fence."""
+    text = "Card: Latest OpenAI Models.\nLane instruction: Research the topic in depth."
+    rendered = render_context(
+        {
+            "blocks": [
+                {"name": "Identity", "scope": "identity", "tokens": 3, "text": "You are an AI."},
+                {"name": "Card", "scope": "card", "tokens": 12, "text": text},
+            ],
+            "tokens": 15,
+            "bounded": False,
+        }
+    )
+    assert rendered is not None
+    headings = [line for line in rendered.split("\n") if line.startswith("## ")]
+    assert headings == ["## Identity", "## Card"]
+    assert text in rendered
+
+
 def test_no_context_renders_nothing() -> None:
     assert render_context(None) is None
 

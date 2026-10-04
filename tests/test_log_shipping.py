@@ -43,10 +43,18 @@ class FakeCalls:
     """The call client's surface the flusher uses — recording, answering as told."""
 
     in_flight: int = 0
-    answer: Answer = field(default_factory=lambda: Answer(payload={
-        "accepted": 1, "dropped": 0, "disabled": False, "busy": False,
-        "harnessLevel": "warn", "pluginLevel": "info",
-    }))
+    answer: Answer = field(
+        default_factory=lambda: Answer(
+            payload={
+                "accepted": 1,
+                "dropped": 0,
+                "disabled": False,
+                "busy": False,
+                "harnessLevel": "warn",
+                "pluginLevel": "info",
+            }
+        )
+    )
     pushed: list[dict[str, Any]] = field(default_factory=list)
     during: Any = None
 
@@ -101,9 +109,14 @@ def test_emit_never_touches_the_wire_and_never_raises(monkeypatch: pytest.Monkey
     handler = UfficiLogHandler()
     client = Untouchable()
     LogFlusher(handler, client)  # built beside it, as in the adapter
-    for target, name in ((builtins, "open"), (socket, "socket"), (time, "sleep"),
-                         (asyncio, "get_running_loop"), (asyncio, "get_event_loop"),
-                         (asyncio, "ensure_future")):
+    for target, name in (
+        (builtins, "open"),
+        (socket, "socket"),
+        (time, "sleep"),
+        (asyncio, "get_running_loop"),
+        (asyncio, "get_event_loop"),
+        (asyncio, "ensure_future"),
+    ):
         monkeypatch.setattr(target, name, trap(name))
     handler.handle(record("run_agent", logging.ERROR, "tool call failed"))
     monkeypatch.undo()
@@ -240,8 +253,16 @@ def test_no_push_while_a_call_is_in_flight_until_the_escape() -> None:
 
 def test_the_answer_sets_the_floors() -> None:
     handler, calls, flusher, _ = flusher_rig()
-    calls.answer = Answer(payload={"accepted": 1, "dropped": 0, "disabled": False, "busy": False,
-                                   "harnessLevel": "info", "pluginLevel": "debug"})
+    calls.answer = Answer(
+        payload={
+            "accepted": 1,
+            "dropped": 0,
+            "disabled": False,
+            "busy": False,
+            "harnessLevel": "info",
+            "pluginLevel": "debug",
+        }
+    )
     handler.handle(record("run_agent", logging.ERROR))
     asyncio.run(flusher.tick())
     handler.handle(record("gateway.run", logging.INFO, "harness info"))
@@ -278,8 +299,16 @@ def test_one_push_in_flight_and_its_own_lines_are_never_kept() -> None:
 
 def test_busy_keeps_the_lines_for_the_next_tick() -> None:
     handler, calls, flusher, _ = flusher_rig()
-    calls.answer = Answer(payload={"accepted": 0, "dropped": 0, "disabled": False, "busy": True,
-                                   "harnessLevel": "warn", "pluginLevel": "info"})
+    calls.answer = Answer(
+        payload={
+            "accepted": 0,
+            "dropped": 0,
+            "disabled": False,
+            "busy": True,
+            "harnessLevel": "warn",
+            "pluginLevel": "info",
+        }
+    )
     handler.handle(record("run_agent", logging.ERROR))
     asyncio.run(flusher.tick())
     assert len(handler) == 1
@@ -287,8 +316,16 @@ def test_busy_keeps_the_lines_for_the_next_tick() -> None:
 
 def test_disabled_drops_the_queue_and_waits() -> None:
     handler, calls, flusher, clock = flusher_rig()
-    calls.answer = Answer(payload={"accepted": 0, "dropped": 1, "disabled": True, "busy": False,
-                                   "harnessLevel": "warn", "pluginLevel": "info"})
+    calls.answer = Answer(
+        payload={
+            "accepted": 0,
+            "dropped": 1,
+            "disabled": True,
+            "busy": False,
+            "harnessLevel": "warn",
+            "pluginLevel": "info",
+        }
+    )
     handler.handle(record("run_agent", logging.ERROR))
     asyncio.run(flusher.tick())
     assert len(handler) == 0
@@ -303,9 +340,17 @@ def test_disabled_drops_the_queue_and_waits() -> None:
 
 def test_a_named_wait_and_a_failure_hold_the_next_push() -> None:
     handler, calls, flusher, clock = flusher_rig()
-    calls.answer = Answer(payload={"accepted": 1, "dropped": 0, "disabled": False, "busy": False,
-                                   "harnessLevel": "warn", "pluginLevel": "info",
-                                   "retryAfterSeconds": 30})
+    calls.answer = Answer(
+        payload={
+            "accepted": 1,
+            "dropped": 0,
+            "disabled": False,
+            "busy": False,
+            "harnessLevel": "warn",
+            "pluginLevel": "info",
+            "retryAfterSeconds": 30,
+        }
+    )
     handler.handle(record("run_agent", logging.ERROR))
     asyncio.run(flusher.tick())
     handler.handle(record("run_agent", logging.ERROR))
@@ -370,8 +415,11 @@ def adapter_with(env: dict[str, str]) -> UfficiAdapter:
 
     return UfficiAdapter(
         PlatformConfig(enabled=True),
-        get_env=lambda name: {"UFFICI_WIRE_TOKEN": "t", "UFFICI_CONTEXT_WINDOW_TOKENS": "32000",
-                              **env}.get(name),
+        get_env=lambda name: {
+            "UFFICI_WIRE_TOKEN": "t",
+            "UFFICI_CONTEXT_WINDOW_TOKENS": "32000",
+            **env,
+        }.get(name),
         connect_fn=connect_fn,
     )
 

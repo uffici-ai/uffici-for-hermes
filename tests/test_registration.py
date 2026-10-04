@@ -21,11 +21,30 @@ class RecordingCtx:
 
     #: Every keyword ``PlatformEntry`` declares at the pinned commit.
     KNOWN = {
-        "name", "label", "adapter_factory", "check_fn", "validate_config", "ensure_deps_fn",
-        "is_connected", "required_env", "install_hint", "setup_fn", "source", "plugin_name",
-        "allowed_users_env", "allow_all_env", "max_message_length", "pii_safe", "emoji",
-        "allow_update_command", "platform_hint", "env_enablement_fn", "apply_yaml_config_fn",
-        "cron_deliver_env_var", "parse_target_ref_fn", "standalone_sender_fn",
+        "name",
+        "label",
+        "adapter_factory",
+        "check_fn",
+        "validate_config",
+        "ensure_deps_fn",
+        "is_connected",
+        "required_env",
+        "install_hint",
+        "setup_fn",
+        "source",
+        "plugin_name",
+        "allowed_users_env",
+        "allow_all_env",
+        "max_message_length",
+        "pii_safe",
+        "emoji",
+        "allow_update_command",
+        "platform_hint",
+        "env_enablement_fn",
+        "apply_yaml_config_fn",
+        "cron_deliver_env_var",
+        "parse_target_ref_fn",
+        "standalone_sender_fn",
     }
 
     def __init__(self) -> None:
@@ -36,8 +55,11 @@ class RecordingCtx:
         if unknown:
             raise TypeError(f"PlatformEntry got unexpected keyword(s): {sorted(unknown)}")
         self.entry = {
-            "name": name, "label": label, "adapter_factory": adapter_factory,
-            "check_fn": check_fn, **kwargs,
+            "name": name,
+            "label": label,
+            "adapter_factory": adapter_factory,
+            "check_fn": check_fn,
+            **kwargs,
         }
 
 
@@ -103,7 +125,10 @@ def test_an_unknown_keyword_would_be_refused() -> None:
     ctx = RecordingCtx()
     with pytest.raises(TypeError):
         ctx.register_platform(
-            name="x", label="X", adapter_factory=lambda c: None, check_fn=lambda: True,
+            name="x",
+            label="X",
+            adapter_factory=lambda c: None,
+            check_fn=lambda: True,
             not_a_real_field=1,
         )
 

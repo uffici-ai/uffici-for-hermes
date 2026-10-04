@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/release.schema.json",
+  "title": "Release",
+  "description": "companion → plugin. The harness may discard what it holds for one conversation: the agent's lane pass on a card ended (pass_ended), the card was archived (archived), or its conversation deleted (deleted). It withdraws no request — an open one is cancelled first — and a plugin that ignores it is still correct, only wasteful.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "conversationId",
+    "reason"
+  ],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol version. A shape change is a new version, never an edit of v1 in place."
+    },
+    "type": {
+      "const": "release"
+    },
+    "conversationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "pass_ended",
+        "archived",
+        "deleted"
+      ]
+    }
+  }
+}

@@ -67,20 +67,32 @@ def test_no_call_or_result_payload_reaches_a_log_line(caplog) -> None:
             adapter.calls.call("memory.recall", {"text": MARKER}, deadline_ms=5000)
         )
         await asyncio.sleep(0)
-        await adapter._on_frame({
-            "v": 1, "type": "result", "callId": wire.sent[-1]["callId"],
-            "error": {"class": "upstream_failed", "instruction": "Try again shortly.",
-                      "upstream": {"detail": MARKER}},
-        })
+        await adapter._on_frame(
+            {
+                "v": 1,
+                "type": "result",
+                "callId": wire.sent[-1]["callId"],
+                "error": {
+                    "class": "upstream_failed",
+                    "instruction": "Try again shortly.",
+                    "upstream": {"detail": MARKER},
+                },
+            }
+        )
         answered.append((await refused).upstream == {"detail": MARKER})
 
         # A malformed result for a call in flight, carrying the marker twice.
         malformed = asyncio.create_task(adapter.calls.call("memory.recall", deadline_ms=5000))
         await asyncio.sleep(0)
-        await adapter._on_frame({
-            "v": 1, "type": "result", "callId": wire.sent[-1]["callId"],
-            "payload": {"text": MARKER}, "error": {"class": "timed_out", "instruction": MARKER},
-        })
+        await adapter._on_frame(
+            {
+                "v": 1,
+                "type": "result",
+                "callId": wire.sent[-1]["callId"],
+                "payload": {"text": MARKER},
+                "error": {"class": "timed_out", "instruction": MARKER},
+            }
+        )
         answered.append((await malformed).error_class == "malformed_payload")
 
         # A result answering nothing — discarded, with the marker in it.
@@ -89,8 +101,14 @@ def test_no_call_or_result_payload_reaches_a_log_line(caplog) -> None:
         )
 
         # An oversized result, decoded by the wire client's own decoder.
-        big = json.dumps({"v": 1, "type": "result", "callId": "c-big",
-                          "payload": {"text": MARKER + "x" * MAX_CALL_PAYLOAD_BYTES}})
+        big = json.dumps(
+            {
+                "v": 1,
+                "type": "result",
+                "callId": "c-big",
+                "payload": {"text": MARKER + "x" * MAX_CALL_PAYLOAD_BYTES},
+            }
+        )
         decoded = WireClient._decode(big)
         answered.append(decoded is not None and decoded["error"]["class"] == "malformed_payload")
 
@@ -105,14 +123,27 @@ def test_no_call_or_result_payload_reaches_a_log_line(caplog) -> None:
         dropped = await adapter.calls.call("memory.recall", {"text": MARKER}, deadline_ms=5000)
         answered.append(dropped.error_class == "upstream_failed")
         client = WireClient(
-            address=WireAddress(kind="tcp", url="ws://127.0.0.1:7411/v1/ring"), token="t",
-            harness_version="0.21.4", plugin_version="0.1.0", budget_tokens=48000,
-            connect_fn=None, on_frame=None,  # type: ignore[arg-type]
+            address=WireAddress(kind="tcp", url="ws://127.0.0.1:7411/v1/ring"),
+            token="t",
+            harness_version="0.21.4",
+            plugin_version="0.1.0",
+            budget_tokens=48000,
+            connect_fn=None,
+            on_frame=None,  # type: ignore[arg-type]
         )
         client._connection = BrokenConnection()
         answered.append(
-            await client.send({"v": 1, "type": "call", "callId": "c-x", "op": "memory.recall",
-                               "deadlineMs": 5000, "payload": {"text": MARKER}}) is False
+            await client.send(
+                {
+                    "v": 1,
+                    "type": "call",
+                    "callId": "c-x",
+                    "op": "memory.recall",
+                    "deadlineMs": 5000,
+                    "payload": {"text": MARKER},
+                }
+            )
+            is False
         )
         return wire.sent, answered
 

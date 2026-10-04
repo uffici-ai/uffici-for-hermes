@@ -93,9 +93,7 @@ def resolve_address(get_env: Callable[[str], str | None]) -> WireAddress:
     raw = (get_env(URL_ENV) or "").strip() or DEFAULT_URL
     parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https", "ws", "wss"}:
-        raise WireConfigError(
-            f"{URL_ENV} has scheme {parsed.scheme!r}; the local wire is http/ws"
-        )
+        raise WireConfigError(f"{URL_ENV} has scheme {parsed.scheme!r}; the local wire is http/ws")
     # 🔴 Loopback unless the operator says otherwise, and the refusal names the
     # switch. The wire's only authentication is a local token: pointing it at
     # another machine sends that token across a network it was never meant for.
@@ -188,8 +186,15 @@ def describe_frame(frame: dict[str, Any]) -> dict[str, Any]:
     """
     out: dict[str, Any] = {}
     allowed = (
-        "type", "requestId", "conversationId", "reason", "outcome", "session", "errorClass",
-        "callId", "op",
+        "type",
+        "requestId",
+        "conversationId",
+        "reason",
+        "outcome",
+        "session",
+        "errorClass",
+        "callId",
+        "op",
     )
     for key in allowed:
         value = frame.get(key)

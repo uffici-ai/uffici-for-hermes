@@ -66,12 +66,18 @@ _TRAILING_TOKEN = re.compile(r"\S*$")
 
 #: The four levels, from Python's names.
 _LEVELS = {
-    "debug": logging.DEBUG, "info": logging.INFO, "warn": logging.WARNING, "error": logging.ERROR,
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warn": logging.WARNING,
+    "error": logging.ERROR,
 }
 
 #: Attributes every LogRecord has; anything else came from ``extra=`` and rides in attrs.
 _STANDARD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {
-    "message", "asctime", "taskName", "session_tag",
+    "message",
+    "asctime",
+    "taskName",
+    "session_tag",
 }
 
 #: This package's name AS LOADED. 🔴 Hermes imports a plugin under its own namespace
@@ -198,9 +204,7 @@ class UfficiLogHandler(logging.Handler):
         if record.exc_info:
             message = f"{message}\n{logging.Formatter().formatException(record.exc_info)}"
         entry: dict[str, Any] = {
-            "ts": datetime.fromtimestamp(record.created, tz=UTC).isoformat(
-                timespec="milliseconds"
-            ),
+            "ts": datetime.fromtimestamp(record.created, tz=UTC).isoformat(timespec="milliseconds"),
             "source": "plugin" if is_plugin_logger(name) else "harness",
             "level": level_name(record.levelno),
             "logger": name[:256],

@@ -24,8 +24,9 @@ PORT = 18139
 BASE = f"http://127.0.0.1:{PORT}"
 
 #: The fixture's catalog result, as the plugin hands it back to the model.
-RESULT = json.dumps({"callUrn": "urn:uffici:tool_call:1",
-                     "result": {"boards": [{"id": "b-1", "name": "Support"}]}})
+RESULT = json.dumps(
+    {"callUrn": "urn:uffici:tool_call:1", "result": {"boards": [{"id": "b-1", "name": "Support"}]}}
+)
 
 DIRECT = [
     {"type": "function", "function": {"name": "clarify", "parameters": {}}},
@@ -33,10 +34,14 @@ DIRECT = [
 ]
 #: What the pinned Hermes sends instead: the bridge, its listing naming the deferred tool.
 BRIDGED = [
-    {"type": "function", "function": {
-        "name": "tool_search",
-        "description": "Search deferred tools. Available: list_boards — List the boards.",
-        "parameters": {}}},
+    {
+        "type": "function",
+        "function": {
+            "name": "tool_search",
+            "description": "Search deferred tools. Available: list_boards — List the boards.",
+            "parameters": {},
+        },
+    },
     {"type": "function", "function": {"name": "tool_describe", "parameters": {}}},
     {"type": "function", "function": {"name": "tool_call", "parameters": {}}},
 ]
@@ -78,15 +83,13 @@ def ask(messages: list[dict], *, stream: bool, tools: list[dict]) -> str:
 
 def streamed_calls(raw: str) -> list[dict]:
     chunks = [
-        json.loads(line[len("data: "):])
+        json.loads(line[len("data: ") :])
         for line in raw.split("\n")
         if line.startswith("data: ") and line != "data: [DONE]"
     ]
     assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
     return [
-        call
-        for chunk in chunks
-        for call in (chunk["choices"][0]["delta"].get("tool_calls") or [])
+        call for chunk in chunks for call in (chunk["choices"][0]["delta"].get("tool_calls") or [])
     ]
 
 
@@ -135,10 +138,17 @@ def test_a_turn_that_cannot_reach_the_tool_answers_instead(mock_server: subproce
 def resumed(content: object, call_id: str = "call_mock_tool") -> list[dict]:
     return [
         *MARKED,
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": call_id, "type": "function",
-             "function": {"name": "list_boards", "arguments": "{}"}},
-        ]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "list_boards", "arguments": "{}"},
+                },
+            ],
+        },
         {"role": "tool", "tool_call_id": call_id, "content": content},
     ]
 

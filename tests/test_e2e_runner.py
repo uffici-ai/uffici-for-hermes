@@ -218,7 +218,13 @@ def test_the_hermes_contract_probe_runs_inside_the_gateway_as_hermes(monkeypatch
     monkeypatch.setattr(e2e.subprocess, "run", fake_run)
     e2e.run_hermes_contract("hermes-container")
     assert seen["args"][:7] == [
-        "docker", "exec", "-i", "-u", "hermes", "hermes-container", e2e.HERMES_PYTHON,
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "hermes",
+        "hermes-container",
+        e2e.HERMES_PYTHON,
     ]
     assert json.loads(seen["args"][-1])["name"] == "uffici-for-hermes"
     assert "def follow_up_hooks_reach_the_adapter" in seen["kwargs"]["input"]

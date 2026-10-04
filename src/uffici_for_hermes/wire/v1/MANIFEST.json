@@ -13,6 +13,7 @@
     "opener",
     "post",
     "ready",
+    "release",
     "result"
   ],
   "validGoldensByFrame": {
@@ -25,10 +26,11 @@
     "opener": 1,
     "post": 2,
     "ready": 1,
+    "release": 3,
     "result": 3
   },
   "invalidGoldensByCloseReason": {
-    "malformed_frame": 16,
+    "malformed_frame": 17,
     "unsupported_version": 2
   },
   "invalidGoldensByCallDisposition": {
@@ -36,9 +38,9 @@
     "unknown_call": 1
   },
   "totals": {
-    "schemas": 12,
-    "valid": 30,
-    "invalid": 20
+    "schemas": 13,
+    "valid": 33,
+    "invalid": 21
   },
   "ops": {
     "logs.push": {

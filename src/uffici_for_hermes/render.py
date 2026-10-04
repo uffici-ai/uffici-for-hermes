@@ -109,22 +109,39 @@ def render_entries(entries: Iterable[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
+#: The platform's request reasons, as the sentence the model reads. A reason
+#: not listed here — a newer platform's — is still rendered, verbatim.
+REASON_SENTENCES: dict[str, str] = {
+    "card_arrived": "the card arrived in your lane",
+    "mention": "you were mentioned",
+    "default_agent": "you are this conversation's default agent",
+    "handback": "a person handed the conversation back to the agents",
+    "reopen": "a person answered your question or decided an approval",
+    "wake_flag": "the platform asked you to answer",
+}
+
+
 def render_reason(
     reason: str, cause: dict[str, Any] | None, entries: Sequence[dict[str, Any]]
 ) -> str:
     """The one line saying why this turn is happening.
 
-    It names the reason the platform gave and, when the causing entry is in the
-    delta, who wrote it — so the model knows which message it is answering when
-    several arrived together.
+    It names the reason the platform gave — as a sentence when the reason is one
+    this plugin knows — and, when the causing entry is in the delta, who wrote it,
+    so the model knows which message it is answering when several arrived
+    together. A cause the PLATFORM wrote (a card's arrival note) names nobody:
+    "(by system)" says nothing the reason does not.
     """
     reason = str(reason or "").strip() or "unknown"
+    said = REASON_SENTENCES.get(reason, reason)
     cause_id = str((cause or {}).get("entryId") or "")
     for entry in entries:
         if isinstance(entry, dict) and str(entry.get("id") or "") == cause_id:
-            who = _label_for(entry.get("author") or {})
-            return f"[Uffici] You were woken because: {reason} (by {who})."
-    return f"[Uffici] You were woken because: {reason}."
+            author = entry.get("author") or {}
+            if author.get("type") == "system":
+                break
+            return f"[Uffici] You were woken because: {said} (by {_label_for(author)})."
+    return f"[Uffici] You were woken because: {said}."
 
 
 def cause_author(cause: dict[str, Any] | None, entries: Sequence[dict[str, Any]]) -> dict[str, Any]:

@@ -156,11 +156,21 @@ def _stand_in_hermes_config(monkeypatch, model, resolved: list, window=272_000) 
     hermes_cli.config = config
     metadata = types.ModuleType("agent.model_metadata")
 
-    def get_model_context_length(model, base_url="", api_key="", config_context_length=None,
-                                 provider="", custom_providers=None):
+    def get_model_context_length(
+        model,
+        base_url="",
+        api_key="",
+        config_context_length=None,
+        provider="",
+        custom_providers=None,
+    ):
         resolved.append(
-            {"model": model, "base_url": base_url, "provider": provider,
-             "config_context_length": config_context_length}
+            {
+                "model": model,
+                "base_url": base_url,
+                "provider": provider,
+                "config_context_length": config_context_length,
+            }
         )
         return config_context_length or window
 
@@ -171,8 +181,10 @@ def _stand_in_hermes_config(monkeypatch, model, resolved: list, window=272_000) 
     agent = types.ModuleType("agent")
     agent.model_metadata = metadata
     for name, module in {
-        "hermes_cli": hermes_cli, "hermes_cli.config": config,
-        "agent": agent, "agent.model_metadata": metadata,
+        "hermes_cli": hermes_cli,
+        "hermes_cli.config": config,
+        "agent": agent,
+        "agent.model_metadata": metadata,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -208,8 +220,12 @@ def test_with_no_override_the_window_is_the_one_hermes_resolves_for_its_own_mode
 
     asyncio.run(scenario())
     assert resolved == [
-        {"model": "gpt-6-luna", "base_url": "https://codex.example",
-         "provider": "openai-codex", "config_context_length": None}
+        {
+            "model": "gpt-6-luna",
+            "base_url": "https://codex.example",
+            "provider": "openai-codex",
+            "config_context_length": None,
+        }
     ]
 
 
@@ -363,9 +379,7 @@ def test_ready_is_sent_only_once_the_harness_can_answer() -> None:
     """
 
     async def scenario():
-        adapter, _ = adapter_with(
-            UFFICI_WIRE_TOKEN="t" * 40, UFFICI_CONTEXT_WINDOW_TOKENS="32000"
-        )
+        adapter, _ = adapter_with(UFFICI_WIRE_TOKEN="t" * 40, UFFICI_CONTEXT_WINDOW_TOKENS="32000")
         # The poll is a real sleep; spin it so the test does not wait on a clock.
         adapter_module.READY_POLL_SECONDS = 0
         sent: list[dict] = []

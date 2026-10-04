@@ -104,8 +104,13 @@ def test_the_uffici_toolset_is_left_to_hermess_own_default() -> None:
     core tools at all, measured in the pinned image — and ``tools.tool_search`` is the whole
     Hermes's. ``dev/hermes_contract.py`` checks the default against the real Hermes."""
     keys = [entry["key"] for entry in _manifest()["config"]]
-    assert not [k for k in keys if k.startswith(("platform_toolsets", "known_plugin_toolsets",
-                                                 "tools.", "agent.disabled_toolsets"))]
+    assert not [
+        k
+        for k in keys
+        if k.startswith(
+            ("platform_toolsets", "known_plugin_toolsets", "tools.", "agent.disabled_toolsets")
+        )
+    ]
 
 
 def test_upgrade_restarts_hermes_only_through_its_own_service() -> None:
@@ -126,9 +131,22 @@ def test_manifest_carries_only_fields_the_companion_schema_knows() -> None:
     # The companion's schema is `additionalProperties: false`; this is its
     # field list, kept in step by hand and by the platform's parity guard.
     known = {
-        "manifestVersion", "harness", "name", "version", "pluginDir", "homeEnv",
-        "defaultHome", "enable", "configSet", "config", "envPath", "envFile", "env", "restart",
-        "restartCommand", "restartService",
+        "manifestVersion",
+        "harness",
+        "name",
+        "version",
+        "pluginDir",
+        "homeEnv",
+        "defaultHome",
+        "enable",
+        "configSet",
+        "config",
+        "envPath",
+        "envFile",
+        "env",
+        "restart",
+        "restartCommand",
+        "restartService",
     }
     unknown = set(_manifest()) - known
     assert not unknown, f"fields the companion would refuse: {sorted(unknown)}"

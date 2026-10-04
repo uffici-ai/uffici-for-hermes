@@ -154,14 +154,12 @@ def test_the_ask_marker_makes_the_model_call_hermess_clarify(mock_server: None) 
         [{"role": "user", "content": "Ana: do we have a board? [ask-a-question]"}], stream=True
     )
     chunks = [
-        json.loads(line[len("data: "):])
+        json.loads(line[len("data: ") :])
         for line in raw.split("\n")
         if line.startswith("data: ") and line != "data: [DONE]"
     ]
     calls = [
-        call
-        for chunk in chunks
-        for call in (chunk["choices"][0]["delta"].get("tool_calls") or [])
+        call for chunk in chunks for call in (chunk["choices"][0]["delta"].get("tool_calls") or [])
     ]
     assert len(calls) == 1 and calls[0]["function"]["name"] == "clarify"
     arguments = json.loads(calls[0]["function"]["arguments"])
@@ -174,12 +172,22 @@ def test_once_the_person_answered_the_model_says_what_they_chose(mock_server: No
     fixed string would pass even if the answer never reached the model."""
     messages = [
         {"role": "user", "content": "Ana: do we have a board? [ask-a-question]"},
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "call_1", "type": "function",
-             "function": {"name": "clarify", "arguments": "{}"}},
-        ]},
-        {"role": "tool", "tool_call_id": "call_1",
-         "content": json.dumps({"question": "Which?", "user_response": "Uffici task board"})},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "clarify", "arguments": "{}"},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({"question": "Which?", "user_response": "Uffici task board"}),
+        },
     ]
     payload = json.loads(ask(messages, stream=False))
     message = payload["choices"][0]["message"]

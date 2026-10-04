@@ -33,7 +33,9 @@ def env(**values: str):
 
 
 def test_a_named_socket_wins() -> None:
-    address = resolve_address(env(**{SOCKET_ENV: "/tmp/u/wire.sock", URL_ENV: "http://127.0.0.1:9"}))
+    address = resolve_address(
+        env(**{SOCKET_ENV: "/tmp/u/wire.sock", URL_ENV: "http://127.0.0.1:9"})
+    )
     assert address.kind == "socket" and address.socket_path == "/tmp/u/wire.sock"
 
 
@@ -111,8 +113,12 @@ def test_a_frame_description_carries_ids_and_counts_and_no_content() -> None:
     wire gains until somebody noticed."""
     described = describe_frame(
         {
-            "v": 1, "type": "brief", "requestId": "req_1", "conversationId": "conv_1",
-            "reason": "mentioned", "token": "SECRET-TOKEN-VALUE",
+            "v": 1,
+            "type": "brief",
+            "requestId": "req_1",
+            "conversationId": "conv_1",
+            "reason": "mentioned",
+            "token": "SECRET-TOKEN-VALUE",
             "delta": [{"text": "the Lisbon invoice is unpaid"}],
             "text": "a reply nobody should see in a log",
         }
@@ -215,8 +221,14 @@ def build(companion: FakeCompanion, received: list, **kwargs) -> WireClient:
 
     return WireClient(
         address=WireAddress(kind="socket", socket_path="/tmp/x", url="ws://companion/v1/ring"),
-        token="t" * 40, harness_version="0.21.3", plugin_version="0.1.0", budget_tokens=1000,
-        connect_fn=connect, on_frame=on_frame, sleep_fn=lambda _s: asyncio.sleep(0), **kwargs
+        token="t" * 40,
+        harness_version="0.21.3",
+        plugin_version="0.1.0",
+        budget_tokens=1000,
+        connect_fn=connect,
+        on_frame=on_frame,
+        sleep_fn=lambda _s: asyncio.sleep(0),
+        **kwargs,
     )
 
 
@@ -279,8 +291,9 @@ def test_a_send_that_fails_is_reported_rather_than_raised() -> None:
     dropped post, never a failed turn for the harness."""
 
     async def scenario():
-        companion = FakeCompanion([{"v": 1, "type": "hello", "companionVersion": "0.1.0"}],
-                                  fail_after=1)
+        companion = FakeCompanion(
+            [{"v": 1, "type": "hello", "companionVersion": "0.1.0"}], fail_after=1
+        )
         received: list[dict] = []
         client = build(companion, received)
         task = asyncio.create_task(client.run())
@@ -303,8 +316,12 @@ def test_the_connection_reconnects_until_stopped() -> None:
 
         client = WireClient(
             address=WireAddress(kind="tcp", url="ws://127.0.0.1:7411/v1/ring"),
-            token="t" * 40, harness_version="0.21.3", plugin_version="0.1.0", budget_tokens=10,
-            connect_fn=connect, on_frame=lambda _f: asyncio.sleep(0),
+            token="t" * 40,
+            harness_version="0.21.3",
+            plugin_version="0.1.0",
+            budget_tokens=10,
+            connect_fn=connect,
+            on_frame=lambda _f: asyncio.sleep(0),
             sleep_fn=lambda _s: asyncio.sleep(0),
         )
         task = asyncio.create_task(client.run())
@@ -358,11 +375,19 @@ def test_losing_the_connection_is_reported_so_calls_in_flight_can_fail() -> None
 
 
 def test_an_oversized_result_is_answered_malformed_payload_for_its_call() -> None:
-    raw = json.dumps({"v": 1, "type": "result", "callId": "c-1",
-                      "payload": {"text": "x" * MAX_CALL_PAYLOAD_BYTES}})
+    raw = json.dumps(
+        {
+            "v": 1,
+            "type": "result",
+            "callId": "c-1",
+            "payload": {"text": "x" * MAX_CALL_PAYLOAD_BYTES},
+        }
+    )
     decoded = WireClient._decode(raw)
     assert decoded == {
-        "v": 1, "type": "result", "callId": "c-1",
+        "v": 1,
+        "type": "result",
+        "callId": "c-1",
         "error": {"class": "malformed_payload", "instruction": decoded["error"]["instruction"]},
     }
     assert decoded["error"]["instruction"], "the agent must have a sentence to relay"
@@ -383,9 +408,27 @@ def test_an_oversized_frame_that_is_not_a_result_is_not_rewritten() -> None:
 
 
 def test_a_call_or_result_description_names_ids_and_class_never_the_payload() -> None:
-    call = describe_frame({"v": 1, "type": "call", "callId": "c-1", "op": "memory.recall",
-                           "deadlineMs": 5000, "payload": {"text": "the Lisbon invoice"}})
+    call = describe_frame(
+        {
+            "v": 1,
+            "type": "call",
+            "callId": "c-1",
+            "op": "memory.recall",
+            "deadlineMs": 5000,
+            "payload": {"text": "the Lisbon invoice"},
+        }
+    )
     assert call == {"type": "call", "callId": "c-1", "op": "memory.recall"}
-    result = describe_frame({"v": 1, "type": "result", "callId": "c-1", "error": {
-        "class": "upstream_failed", "instruction": "x", "upstream": {"detail": "Lisbon"}}})
+    result = describe_frame(
+        {
+            "v": 1,
+            "type": "result",
+            "callId": "c-1",
+            "error": {
+                "class": "upstream_failed",
+                "instruction": "x",
+                "upstream": {"detail": "Lisbon"},
+            },
+        }
+    )
     assert result == {"type": "result", "callId": "c-1", "callErrorClass": "upstream_failed"}

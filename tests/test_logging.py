@@ -32,15 +32,25 @@ AGENT_HANDLE = "@archer"
 TOKEN = "wire-token-value-that-must-never-be-logged-0123456789"
 
 SECRETS = (
-    MEMBER_TEXT, AGENT_TEXT, TOOL_TEXT, OPENER_TEXT, REPLY_TEXT,
-    MEMBER_NAME, AGENT_HANDLE, TOKEN,
+    MEMBER_TEXT,
+    AGENT_TEXT,
+    TOOL_TEXT,
+    OPENER_TEXT,
+    REPLY_TEXT,
+    MEMBER_NAME,
+    AGENT_HANDLE,
+    TOKEN,
 )
 
 
 def entry(entry_id: str, cursor: str, kind: str, text: str, author: dict) -> dict:
     return {
-        "id": entry_id, "cursor": cursor, "at": "2026-09-17T14:01:00Z",
-        "kind": kind, "text": text, "author": author,
+        "id": entry_id,
+        "cursor": cursor,
+        "at": "2026-09-17T14:01:00Z",
+        "kind": kind,
+        "text": text,
+        "author": author,
     }
 
 
@@ -48,9 +58,15 @@ MEMBER = {"type": "member", "id": "m1", "label": MEMBER_NAME, "self": False}
 AGENT = {"type": "agent", "id": "a7", "label": "Archer", "handle": AGENT_HANDLE, "self": False}
 
 BRIEF = {
-    "v": 1, "type": "brief", "requestId": "req_1", "conversationId": "conv_1",
-    "reason": "mentioned", "cause": {"entryId": "e2", "authorId": "m1"},
-    "deadline": "2026-09-17T14:10:00Z", "sinceCursor": "c0001", "throughCursor": "c0003",
+    "v": 1,
+    "type": "brief",
+    "requestId": "req_1",
+    "conversationId": "conv_1",
+    "reason": "mentioned",
+    "cause": {"entryId": "e2", "authorId": "m1"},
+    "deadline": "2026-09-17T14:10:00Z",
+    "sinceCursor": "c0001",
+    "throughCursor": "c0003",
     "resetSession": False,
     "delta": [
         entry("e2", "c0002", "message", MEMBER_TEXT, MEMBER),
@@ -59,7 +75,9 @@ BRIEF = {
 }
 
 OPENER = {
-    "v": 1, "type": "opener", "requestId": "req_1",
+    "v": 1,
+    "type": "opener",
+    "requestId": "req_1",
     "entries": [
         entry("e0", "c0000", "message", OPENER_TEXT, MEMBER),
         entry("e1", "c0001", "message", AGENT_TEXT, AGENT),
@@ -146,8 +164,11 @@ def test_no_transcript_content_and_no_token_reaches_a_log_line(caplog) -> None:
         # newer than this plugin carries transcript in fields we cannot name.
         await adapter._on_frame(
             {
-                "v": 1, "type": "mystery", "requestId": "req_1",
-                "text": MEMBER_TEXT, "entries": OPENER["entries"],
+                "v": 1,
+                "type": "mystery",
+                "requestId": "req_1",
+                "text": MEMBER_TEXT,
+                "entries": OPENER["entries"],
                 "note": AGENT_TEXT,
             }
         )
@@ -215,7 +236,8 @@ def test_the_wire_token_is_in_no_logs_push_payload_at_any_level(caplog) -> None:
         adapter = UfficiAdapter(
             PlatformConfig(enabled=True),
             get_env=lambda name: {
-                "UFFICI_WIRE_TOKEN": TOKEN, "UFFICI_CONTEXT_WINDOW_TOKENS": "32000",
+                "UFFICI_WIRE_TOKEN": TOKEN,
+                "UFFICI_CONTEXT_WINDOW_TOKENS": "32000",
             }.get(name),
             connect_fn=connect_fn,
         )

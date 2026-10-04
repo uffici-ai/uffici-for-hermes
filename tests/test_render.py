@@ -37,7 +37,10 @@ def test_an_agent_carries_its_handle_so_the_model_can_address_it() -> None:
 
 def test_a_tool_line_is_verbatim_and_unattributed() -> None:
     entry = {
-        "id": "e9", "cursor": "c9", "at": "2026-09-17T14:01:00Z", "kind": "tool_line",
+        "id": "e9",
+        "cursor": "c9",
+        "at": "2026-09-17T14:01:00Z",
+        "kind": "tool_line",
         "text": "queried a table (3 rows)",
         "author": {"type": "agent", "id": "a1", "label": "Smith", "self": True},
     }
@@ -49,7 +52,11 @@ def test_a_tool_line_is_verbatim_and_unattributed() -> None:
 
 def test_a_tombstone_says_something_was_withdrawn() -> None:
     entry = {
-        "id": "e9", "cursor": "c9", "at": "2026-09-17T14:01:00Z", "kind": "tombstone", "text": "",
+        "id": "e9",
+        "cursor": "c9",
+        "at": "2026-09-17T14:01:00Z",
+        "kind": "tombstone",
+        "text": "",
         "author": {"type": "member", "id": "m1", "label": "Ana Marques", "self": False},
     }
     assert render_entry(entry) == [f"Ana Marques: {TOMBSTONE_LINE}"]
@@ -63,7 +70,10 @@ def test_an_unknown_kind_is_labelled_rather_than_dropped() -> None:
     that arrival a breaking change.
     """
     entry = {
-        "id": "e9", "cursor": "c9", "at": "2026-09-17T14:01:00Z", "kind": "summary",
+        "id": "e9",
+        "cursor": "c9",
+        "at": "2026-09-17T14:01:00Z",
+        "kind": "summary",
         "text": "Earlier: the invoice was approved.",
         "author": {"type": "system", "id": "sys", "label": "Uffici", "self": False},
     }
@@ -72,7 +82,10 @@ def test_an_unknown_kind_is_labelled_rather_than_dropped() -> None:
 
 def test_an_attachment_is_a_reference_line_never_its_content() -> None:
     entry = {
-        "id": "e9", "cursor": "c9", "at": "2026-09-17T14:01:00Z", "kind": "message",
+        "id": "e9",
+        "cursor": "c9",
+        "at": "2026-09-17T14:01:00Z",
+        "kind": "message",
         "text": "Here it is.",
         "author": {"type": "member", "id": "m1", "label": "Ana Marques", "self": False},
         "attachments": [{"id": "f1", "name": "invoice.pdf", "ref": "files/invoice.pdf"}],
@@ -86,8 +99,11 @@ def test_an_attachment_is_a_reference_line_never_its_content() -> None:
 def test_a_timestamp_appears_only_on_a_gap() -> None:
     def at(minute: int) -> dict:
         return {
-            "id": f"e{minute}", "cursor": f"c{minute}", "at": f"2026-09-17T14:{minute:02d}:00Z",
-            "kind": "message", "text": f"line {minute}",
+            "id": f"e{minute}",
+            "cursor": f"c{minute}",
+            "at": f"2026-09-17T14:{minute:02d}:00Z",
+            "kind": "message",
+            "text": f"line {minute}",
             "author": {"type": "member", "id": "m1", "label": "Ana", "self": False},
         }
 
@@ -100,8 +116,14 @@ def test_a_timestamp_appears_only_on_a_gap() -> None:
 
 def test_an_unreadable_timestamp_costs_the_gap_line_never_the_entry() -> None:
     entries = [
-        {"id": "e1", "cursor": "c1", "at": "not a date", "kind": "message", "text": "still here",
-         "author": {"type": "member", "id": "m1", "label": "Ana", "self": False}},
+        {
+            "id": "e1",
+            "cursor": "c1",
+            "at": "not a date",
+            "kind": "message",
+            "text": "still here",
+            "author": {"type": "member", "id": "m1", "label": "Ana", "self": False},
+        },
     ]
     assert render_entries(entries) == "Ana: still here"
 
@@ -122,6 +144,33 @@ def test_the_reason_line_survives_a_cause_outside_the_delta() -> None:
     assert line == "[Uffici] You were woken because: mentioned."
 
 
+@pytest.mark.parametrize(
+    ("reason", "sentence"),
+    [
+        ("card_arrived", "the card arrived in your lane"),
+        ("mention", "you were mentioned"),
+        ("default_agent", "you are this conversation's default agent"),
+        ("handback", "a person handed the conversation back to the agents"),
+        ("reopen", "a person answered your question or decided an approval"),
+        ("wake_flag", "the platform asked you to answer"),
+    ],
+)
+def test_a_known_reason_reads_as_a_sentence(reason: str, sentence: str) -> None:
+    assert render_reason(reason, None, []) == f"[Uffici] You were woken because: {sentence}."
+
+
+def test_an_unknown_reason_is_still_rendered_verbatim() -> None:
+    line = render_reason("a_newer_reason", None, [])
+    assert line == "[Uffici] You were woken because: a_newer_reason."
+
+
+def test_a_platform_cause_names_nobody() -> None:
+    """A card's arrival is a note the platform wrote: never "(by system)"."""
+    note = {"id": "7", "kind": "note", "text": "Ana moved the card.", "author": {"type": "system"}}
+    line = render_reason("card_arrived", {"entryId": "7"}, [note])
+    assert line == "[Uffici] You were woken because: the card arrived in your lane."
+
+
 def test_a_missing_reason_still_produces_a_line() -> None:
     assert render_reason("", None, []) == "[Uffici] You were woken because: unknown."
 
@@ -135,13 +184,28 @@ def test_the_sender_is_the_causes_author_not_the_last_human() -> None:
     a person who said nothing this turn.
     """
     entries = [
-        {"id": "e1", "cursor": "c1", "at": "2026-09-17T14:01:00Z", "kind": "message",
-         "text": "earlier",
-         "author": {"type": "member", "id": "m1", "label": "Ana", "self": False}},
-        {"id": "e2", "cursor": "c2", "at": "2026-09-17T14:02:00Z", "kind": "message",
-         "text": "@smith take this",
-         "author": {"type": "agent", "id": "a7", "label": "Archer",
-                    "handle": "@archer", "self": False}},
+        {
+            "id": "e1",
+            "cursor": "c1",
+            "at": "2026-09-17T14:01:00Z",
+            "kind": "message",
+            "text": "earlier",
+            "author": {"type": "member", "id": "m1", "label": "Ana", "self": False},
+        },
+        {
+            "id": "e2",
+            "cursor": "c2",
+            "at": "2026-09-17T14:02:00Z",
+            "kind": "message",
+            "text": "@smith take this",
+            "author": {
+                "type": "agent",
+                "id": "a7",
+                "label": "Archer",
+                "handle": "@archer",
+                "self": False,
+            },
+        },
     ]
     author = cause_author({"entryId": "e2", "authorId": "a7"}, entries)
     assert author["id"] == "a7" and author["label"] == "Archer"

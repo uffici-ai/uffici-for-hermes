@@ -82,8 +82,12 @@ class Tunnel:
 
 
 def tools_for(
-    *, registry: Registry | None = None, tunnel: Tunnel | None = None,
-    ledger: dict[str, str] | None = None, enabled: bool = True, clock=None,
+    *,
+    registry: Registry | None = None,
+    tunnel: Tunnel | None = None,
+    ledger: dict[str, str] | None = None,
+    enabled: bool = True,
+    clock=None,
     session=None,
 ) -> tuple[PlatformTools, Registry, Tunnel, dict[str, str]]:
     registry = registry or Registry()
@@ -95,8 +99,11 @@ def tools_for(
     if session is not None:
         kwargs["session_reader"] = session
     tools = PlatformTools(
-        registry.register_tool, call=tunnel.call, request_for=ledger.get,
-        enabled=lambda: enabled, **kwargs,
+        registry.register_tool,
+        call=tunnel.call,
+        request_for=ledger.get,
+        enabled=lambda: enabled,
+        **kwargs,
     )
     return tools, registry, tunnel, ledger
 
@@ -118,15 +125,17 @@ def test_a_result_that_is_not_a_catalog_is_none(payload: Any) -> None:
 
 def test_an_entry_outside_the_wire_is_skipped_never_repaired() -> None:
     good = BOARDS["tools"][0]
-    payload = {"tools": [
-        good,
-        {**good, "name": "has space"},
-        {**good, "name": "deny_one", "permission": "deny"},
-        {**good, "name": "no_params", "parameters": []},
-        {**good, "name": "long", "description": "x" * 16_001},
-        {**good},  # a duplicate name
-        "not an object",
-    ]}
+    payload = {
+        "tools": [
+            good,
+            {**good, "name": "has space"},
+            {**good, "name": "deny_one", "permission": "deny"},
+            {**good, "name": "no_params", "parameters": []},
+            {**good, "name": "long", "description": "x" * 16_001},
+            {**good},  # a duplicate name
+            "not an object",
+        ]
+    }
     assert set(catalog_entries(payload) or {}) == {"list_boards"}
 
 
@@ -248,7 +257,8 @@ def test_the_catalog_is_asked_for_at_most_once_a_minute() -> None:
 
     tunnel = asyncio.run(scenario())
     assert [payload for _, payload in tunnel.calls] == [
-        {"conversationId": "conv-1"}, {"conversationId": "conv-2"},
+        {"conversationId": "conv-1"},
+        {"conversationId": "conv-2"},
     ]
 
 
@@ -363,7 +373,8 @@ def test_a_failed_call_relays_its_instruction() -> None:
 
 
 @pytest.mark.parametrize(
-    "payload", [{"callUrn": None}, {"callUrn": "", "result": {}}, {"callUrn": 7, "result": {}}],
+    "payload",
+    [{"callUrn": None}, {"callUrn": "", "result": {}}, {"callUrn": 7, "result": {}}],
 )
 def test_a_result_outside_the_wire_is_malformed(payload: dict) -> None:
     answer = CallResult(call_id="c", payload=payload)
@@ -492,7 +503,9 @@ def test_a_call_that_outlives_its_wait_is_a_timed_out_answer(monkeypatch) -> Non
         raise AssertionError("unreachable")
 
     tools = PlatformTools(
-        Registry().register_tool, call=never, request_for={"conv-a": "r"}.get,
+        Registry().register_tool,
+        call=never,
+        request_for={"conv-a": "r"}.get,
         enabled=lambda: True,
     )
     tools.apply(catalog_entries(BOARDS) or {})
@@ -520,14 +533,22 @@ def test_hermess_own_tool_calls_are_reported_by_name_only() -> None:
     with Loop() as loop:
         tools.bind_loop(loop)
         for name, status in (
-            ("terminal", "ok"), ("web_search", "error"),
+            ("terminal", "ok"),
+            ("web_search", "error"),
             ("list_boards", "ok"),  # ours: cited, not reported
             ("tool_search", "ok"),  # Hermes's bridge, not something the agent did
             ("", "ok"),
         ):
-            in_turn("uffici", "conv-a", lambda n=name, s=status: on_post_tool_call(
-                tool_name=n, args={"secret": "never read"}, result="never read", status=s,
-            ))
+            in_turn(
+                "uffici",
+                "conv-a",
+                lambda n=name, s=status: on_post_tool_call(
+                    tool_name=n,
+                    args={"secret": "never read"},
+                    result="never read",
+                    status=s,
+                ),
+            )
         in_turn("telegram", "conv-a", lambda: on_post_tool_call(tool_name="terminal"))
         asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(timeout=5)
     assert tools.take_extras("req-a")["activity"] == [
@@ -673,11 +694,16 @@ def test_a_brief_waits_for_its_tools_before_hermes_has_it() -> None:
         brief = adapter_golden("brief")
         await adapter._on_frame(brief)  # noqa: SLF001
         await spin()
-        assert wire.calls("tools.list") == [{
-            "v": 1, "type": "call", "callId": wire.calls("tools.list")[0]["callId"],
-            "op": "tools.list", "deadlineMs": pt.LIST_DEADLINE_MS,
-            "payload": {"conversationId": brief["conversationId"]},
-        }]
+        assert wire.calls("tools.list") == [
+            {
+                "v": 1,
+                "type": "call",
+                "callId": wire.calls("tools.list")[0]["callId"],
+                "op": "tools.list",
+                "deadlineMs": pt.LIST_DEADLINE_MS,
+                "payload": {"conversationId": brief["conversationId"]},
+            }
+        ]
         assert adapter.handled == [], "the turn reached Hermes before its tools did"
         wire.release()
         await spin()

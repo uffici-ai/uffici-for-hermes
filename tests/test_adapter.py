@@ -209,8 +209,11 @@ def test_a_fresh_brief_is_ACKED_first_so_the_opener_can_arrive() -> None:
         acks = wire.of_type("ack")
         assert acks, "no ack was sent, so the companion would never send the opener"
         assert acks[0] == {
-            "v": 1, "type": "ack", "requestId": "req_01J8ZQ7X4K2M9P0Q",
-            "outcome": "accepted", "session": "fresh",
+            "v": 1,
+            "type": "ack",
+            "requestId": "req_01J8ZQ7X4K2M9P0Q",
+            "outcome": "accepted",
+            "session": "fresh",
         }
         # And the opener the wire sent back in answer got the event admitted.
         assert len(adapter.handled) == 1, "the held event was never handed to the harness"
@@ -657,6 +660,68 @@ def test_hermess_restart_notice_is_switched_off_for_uffici() -> None:
 # --------------------------------------------------------------------------- cancel
 
 
+# --------------------------------------------------------------------------- release
+
+
+def test_a_release_resets_the_conversations_session_and_logs_ids_only(caplog) -> None:
+    """#2356: the lane pass is over — the conversation's Hermes session is reset,
+    and the log says which conversation and why, never anything said in it."""
+
+    async def scenario():
+        store = FakeStore()
+        adapter, _ = build(store)
+        source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
+        store._entries[build_session_key(source)] = object()
+        with caplog.at_level("INFO"):
+            await adapter._on_frame(golden("release-pass-ended"))
+        assert store.resets == [build_session_key(source)]
+        assert "uffici: released conversation conv_01J8ZQ7X4K2M9P0Q (pass_ended)" in caplog.text
+
+    run(scenario())
+
+
+def test_a_release_forgets_the_conversations_closed_requests() -> None:
+    async def scenario():
+        adapter, _ = build(FakeStore())
+        # A request of this conversation this plugin still remembers, and one of another.
+        adapter._conversation_of["req_old"] = "conv_01J8ZQ7X4K2M9P0Q"
+        adapter._conversation_of["req_elsewhere"] = "conv_other"
+        await adapter._on_frame(golden("release-archived"))
+        assert "req_old" not in adapter._conversation_of
+        assert adapter._conversation_of == {"req_elsewhere": "conv_other"}
+
+    run(scenario())
+
+
+def test_a_release_never_resets_under_a_turn_still_open() -> None:
+    """🔴 A release withdraws nothing: a turn still open is the cancel's to stop,
+    and resetting its session would pull its history out from under it."""
+
+    async def scenario():
+        store = FakeStore()
+        adapter, _ = build(store)
+        await adapter._on_frame(golden("brief"))
+        await adapter._on_frame(golden("opener"))
+        assert adapter._open_request, "non-vacuity: the brief opened a request"
+        await adapter._on_frame(golden("release-pass-ended"))
+        assert store.resets == []
+        assert adapter._open_request
+
+    run(scenario())
+
+
+def test_a_release_without_a_conversation_is_discarded(caplog) -> None:
+    async def scenario():
+        store = FakeStore()
+        adapter, _ = build(store)
+        with caplog.at_level("WARNING"):
+            await adapter._on_frame({"v": 1, "type": "release", "reason": "deleted"})
+        assert store.resets == []
+        assert "a release without a conversation was discarded" in caplog.text
+
+    run(scenario())
+
+
 def test_a_cancel_becomes_hermess_own_stop() -> None:
     """🔴 ``allow_gateway_control=True`` on this ONE event: it is the companion
     speaking over an authenticated local wire, not transcript text."""
@@ -761,7 +826,8 @@ def test_a_status_line_is_never_a_post() -> None:
         await adapter._on_frame(golden("opener"))
 
         result = await adapter.send_or_update_status(
-            brief["conversationId"], "lease_wait",
+            brief["conversationId"],
+            "lease_wait",
             "⏳ Still waiting for the other Hermes process on this session (15s)...",
             metadata=None,
         )
@@ -805,8 +871,11 @@ def test_after_a_supersede_the_next_brief_starts_a_new_turn() -> None:
         await adapter._on_frame({**golden("brief"), "requestId": "req_2"})
 
         assert wire.of_type("ack")[-1] == {
-            "v": 1, "type": "ack", "requestId": "req_2",
-            "outcome": "accepted", "session": "resumed",
+            "v": 1,
+            "type": "ack",
+            "requestId": "req_2",
+            "outcome": "accepted",
+            "session": "resumed",
         }
 
     run(scenario())
@@ -1075,8 +1144,9 @@ def test_a_result_frame_reaches_the_call_it_names() -> None:
         await asyncio.sleep(0)
         call = wire.sent[-1]
         assert call["type"] == "call"
-        await adapter._on_frame({"v": 1, "type": "result", "callId": call["callId"],
-                                 "payload": {"facts": []}})
+        await adapter._on_frame(
+            {"v": 1, "type": "result", "callId": call["callId"], "payload": {"facts": []}}
+        )
         answered = await task
         assert answered.ok and answered.payload == {"facts": []}
 
@@ -1499,11 +1569,17 @@ def answer_brief(text: str, request_id: str = "req_answer", **over) -> dict:
         "requestId": request_id,
         "delta": [
             {
-                "id": "entry_9", "cursor": "c0009", "at": "2026-09-17T14:05:00Z",
+                "id": "entry_9",
+                "cursor": "c0009",
+                "at": "2026-09-17T14:05:00Z",
                 "author": {
-                    "type": "member", "id": "member_2", "label": "Ana Marques", "self": False,
+                    "type": "member",
+                    "id": "member_2",
+                    "label": "Ana Marques",
+                    "self": False,
                 },
-                "kind": "message", "text": text,
+                "kind": "message",
+                "text": text,
             }
         ],
         **over,
@@ -1521,8 +1597,11 @@ async def asked(features: bool = True, choices=("Uffici board", "Trello")):
     session_key = adapter._session_key_of[brief["requestId"]]
     CLARIFY.register("clarify_1", session_key, "Which board?", list(choices) if choices else None)
     result = await adapter.send_clarify(
-        brief["conversationId"], "Which board?", list(choices) if choices else None,
-        "clarify_1", session_key,
+        brief["conversationId"],
+        "Which board?",
+        list(choices) if choices else None,
+        "clarify_1",
+        session_key,
     )
     return adapter, wire, brief, session_key, result
 
@@ -1541,9 +1620,15 @@ def test_a_question_reaches_the_person_as_the_card_and_settles_the_request() -> 
         posts = wire.of_type("post")
         assert posts == [
             {
-                "v": 1, "type": "post", "requestId": brief["requestId"], "text": "Which board?",
-                "question": {"id": "clarify_1", "choices": ["Uffici board", "Trello"],
-                             "multiSelect": False},
+                "v": 1,
+                "type": "post",
+                "requestId": brief["requestId"],
+                "text": "Which board?",
+                "question": {
+                    "id": "clarify_1",
+                    "choices": ["Uffici board", "Trello"],
+                    "multiSelect": False,
+                },
             }
         ]
         assert wire.of_type("done") == [
@@ -1582,8 +1667,11 @@ def test_the_answer_resolves_the_question_rather_than_starting_a_new_turn() -> N
         assert CLARIFY.entries["clarify_1"].response == "Trello"
         assert len(adapter.handled) == handled_before, "the answer became a new Hermes turn"
         assert wire.of_type("ack")[-1] == {
-            "v": 1, "type": "ack", "requestId": "req_answer",
-            "outcome": "accepted", "session": "resumed",
+            "v": 1,
+            "type": "ack",
+            "requestId": "req_answer",
+            "outcome": "accepted",
+            "session": "resumed",
         }
         # The continuing turn speaks on the request that carried the answer.
         assert adapter._open_request[brief["conversationId"]] == "req_answer"
@@ -1603,7 +1691,10 @@ def test_the_turn_that_asked_closes_the_request_that_answered() -> None:
         await adapter.on_processing_complete(original, ProcessingOutcome.SUCCESS)
         await settle(adapter)
         assert wire.of_type("done")[-1] == {
-            "v": 1, "type": "done", "requestId": "req_answer", "outcome": "answered"
+            "v": 1,
+            "type": "done",
+            "requestId": "req_answer",
+            "outcome": "answered",
         }
 
     run(scenario())
@@ -1621,11 +1712,15 @@ def test_a_turn_that_asks_twice_closes_its_last_answering_request() -> None:
         await adapter._on_frame(answer_brief("never mind, what is 7 times 6?", "req_first_answer"))
 
         # The same turn asks again, now speaking on the request that carried the answer.
-        CLARIFY.register("clarify_2", session_key, "Please choose one: which board?",
-                         ["Uffici board", "Trello"])
+        CLARIFY.register(
+            "clarify_2", session_key, "Please choose one: which board?", ["Uffici board", "Trello"]
+        )
         await adapter.send_clarify(
-            brief["conversationId"], "Please choose one: which board?",
-            ["Uffici board", "Trello"], "clarify_2", session_key,
+            brief["conversationId"],
+            "Please choose one: which board?",
+            ["Uffici board", "Trello"],
+            "clarify_2",
+            session_key,
         )
         assert wire.of_type("done")[-1]["requestId"] == "req_first_answer", (
             "the second question settles the request it was asked on"
@@ -1751,13 +1846,19 @@ def test_while_a_card_question_waits_a_brief_no_person_spoke_in_is_held_not_queu
         adapter, wire, _, session_key, _ = await asked()
         brief = answer_brief("I can take it", request_id="req_agent")
         brief["delta"][0]["author"] = {
-            "type": "agent", "id": "a2", "label": "Archer", "self": False,
+            "type": "agent",
+            "id": "a2",
+            "label": "Archer",
+            "self": False,
         }
         handled_before = len(adapter.handled)
         await adapter._on_frame(brief)
         assert len(adapter.handled) == handled_before, "it was queued behind the question"
         assert wire.of_type("done")[-1] == {
-            "v": 1, "type": "done", "requestId": "req_agent", "outcome": "cancelled",
+            "v": 1,
+            "type": "done",
+            "requestId": "req_agent",
+            "outcome": "cancelled",
         }
         assert CLARIFY.has_pending(session_key), "the question was ended by an unrelated brief"
 
@@ -1799,7 +1900,9 @@ def test_hermess_startup_auto_resume_is_declined_when_the_companion_redelivers()
 
         # A brief is never the resume, whatever the companion says.
         brief = MessageEvent(
-            text="", source=startup_resume().source, internal=True,
+            text="",
+            source=startup_resume().source,
+            internal=True,
             metadata={"uffici_request_id": "req_1"},
         )
         await adapter.handle_message(brief)
@@ -1856,8 +1959,10 @@ def test_only_hermess_resume_shape_is_declined_and_only_for_the_companion_that_s
             {"v": 1, "type": "hello", "features": ["question", "redelivery"]}
         )
         command = MessageEvent(
-            text="", message_type=MessageType.COMMAND,
-            source=startup_resume().source, internal=True,
+            text="",
+            message_type=MessageType.COMMAND,
+            source=startup_resume().source,
+            internal=True,
         )
         await adapter.handle_message(command)
         assert adapter.handled[-1] is command
