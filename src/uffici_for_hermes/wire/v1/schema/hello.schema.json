@@ -110,6 +110,25 @@
               "description": "The harness's settings that keep a memory of its own beside Uffici's, by key (for Hermes: `memory.memory_enabled`, `memory.user_profile_enabled` still on, or `memory.provider` naming another provider)."
             }
           }
+        },
+        "harnessSupport": {
+          "type": "object",
+          "required": [
+            "range"
+          ],
+          "description": "Optional. The harness versions this plugin release supports, and the plugin's verdict on `harnessVersion` against them, as it read them at this hello (#2414) — a client-reported signal shown by `uffici doctor` and NEVER a refusal: no well-formed value here closes a connection (a `range` past its bound is malformed like any other field, which is why the plugin holds its range under it), holds a ring or fails a setup step. The plugin owns the range because only it knows the interfaces it was written against and how its harness numbers releases; the companion never parses a harness version. An older plugin omits the whole object, which the doctor reports as not reported.",
+          "properties": {
+            "range": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "The supported versions in the plugin's own words, e.g. `>=0.21.5,<0.22`."
+            },
+            "supported": {
+              "type": "boolean",
+              "description": "Whether `harnessVersion` is inside `range`. ABSENT when the plugin could not read the harness's version — the doctor then says so rather than guessing either way."
+            }
+          }
         }
       }
     },

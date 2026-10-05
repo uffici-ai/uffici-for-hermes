@@ -18,6 +18,7 @@ and never carries an allowlist of its own.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -40,6 +41,7 @@ from .log_shipping import LogFlusher, UfficiLogHandler, install, shared_handler
 from .memory import FEATURE_MEMORY, MemoryTools, publish, report_memory_drift, withdraw
 from .platform_tools import FEATURE_TOOLS, PlatformTools, on_post_tool_call
 from .render import cause_author, render_entries, render_reason
+from .support import SUPPORTED_RANGE, harness_support
 from .wire_client import (
     WireClient,
     WireConfigError,
@@ -63,6 +65,9 @@ WINDOW_PROBE_TIMEOUT_SECONDS = 60.0
 #: How long reading the harness's drift may take (#2406). Past it the hello reports every
 #: kind unread — drift is a signal, and never holds a connection.
 DRIFT_READ_TIMEOUT_SECONDS = 10.0
+#: How long the brief waits for Hermes's lookup, routing and transcript read before it answers
+#: ``fresh`` (#2414): the ack and every later frame on the wire wait on it.
+SESSION_READ_TIMEOUT_SECONDS = 2.0
 
 #: What a plugin that was not installed from a release says it is (#2236).
 DEV_VERSION = "0.0.0-dev"
@@ -414,13 +419,25 @@ class UfficiAdapter(BasePlatformAdapter):
             logger.error("uffici: cannot start — %s", exc)
             return False
 
+        harness_version = self._harness_version()
+        support = harness_support(harness_version)
+        if support.get("supported") is False:
+            # 🔴 Said, never refused (#2414): the hello carries the same verdict, and
+            # `uffici doctor` shows it. An untested Hermes can misbehave without an error.
+            logger.warning(
+                "uffici: Hermes %s is outside the versions this plugin supports (%s); "
+                "it connects, but may misbehave without an error",
+                harness_version,
+                SUPPORTED_RANGE,
+            )
         self._client = WireClient(
             address=address,
             token=token,
-            harness_version=self._harness_version(),
+            harness_version=harness_version,
             plugin_version=plugin_version(),
             budget_tokens=budget,
             drift=self._read_drift,
+            harness_support=support,
             connect_fn=self._connect_fn or _default_connect,
             on_frame=self._on_frame,
             on_disconnected=self._calls.fail_all,
@@ -1216,9 +1233,11 @@ class UfficiAdapter(BasePlatformAdapter):
             user_name=str(author.get("label") or "") or None,
         )
 
-        fresh = bool(frame.get("resetSession")) or not self._session_exists(source)
         if frame.get("resetSession"):
             self._reset_session(source)
+            fresh = True
+        else:
+            fresh = await self._session_is_fresh(source)
 
         event = MessageEvent(
             text=render_entries(delta),
@@ -1702,28 +1721,76 @@ class UfficiAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 — a probe that raises reads as idle
             return False
 
-    def _session_exists(self, source: Any) -> bool:
-        """Whether Hermes already has a session for this conversation.
+    async def _session_is_fresh(self, source: Any) -> bool:
+        """Whether the session Hermes will run this brief on has no transcript.
 
-        🔴 When it cannot be answered, the answer is FRESH. A wrong "resumed"
-        costs the model its whole recalled history — it answers a conversation
-        it cannot see. A wrong "fresh" costs one extra read. The two mistakes
-        are not the same size.
+        🔴 Read from Hermes's ROUTING decision, never from a lookup alone (#2414). An entry
+        in the store's index can be a session Hermes is about to replace: one ``suspended``
+        by ``/stop`` or the stuck-restart counter, one whose row was ended in ``state.db``
+        while the gateway stayed alive, or — on a Hermes before ``v2026.9.24`` — one its
+        reset policy expired by time. Hermes replaces it inside ``get_or_create_session``,
+        with a new session id and no history, the moment the message routes; a plugin that
+        read the key's presence acked ``resumed`` a moment earlier, so no opener came, and
+        the model answered the newest messages of a conversation it could not see. So when
+        an entry exists the plugin routes through the store's own call — the one the turn
+        makes, which then lands on the same session — and reads that session's transcript
+        through the store's own reader, which follows a compression tip to the same
+        conversation. Empty is fresh.
+
+        🔴 With NO entry the plugin routes nothing and answers ``fresh``: there is nothing
+        to replace, and creating the session here would change what the turn sees — Hermes
+        treats a session as new only while its ``created_at`` equals its ``updated_at``, and
+        the turn's own routing would touch it first, so its ``session:start`` hook (and
+        auto-loaded skills) would never fire for a new conversation. A suspended session
+        replaced here keeps that status through ``was_auto_reset``, which the turn consumes;
+        one replaced because its row was ended in ``state.db`` carries no flag, so its first
+        turn does not emit ``session:start`` — a residual of that rare path, accepted over
+        setting Hermes's own flags from a plugin.
+
+        Neither the entry's ``was_auto_reset`` nor a changed session id is the test: the
+        first stays on the entry after the reset's first turn, and the second also moves
+        on a compression heal, which keeps the history.
+
+        Routing here passes ``touch_activity=False``: a brief that never becomes a turn
+        must not move the conversation's activity clock; the turn's own routing touches it.
+        The store is synchronous and guarded by a ``threading.Lock`` (Hermes's own
+        ``AsyncSessionStore`` offloads every call to a thread the same way), so the calls
+        leave the event loop — inside one bound, past which the answer is ``fresh``.
+        Frames are handled one at a time, so while it waits every other frame on the wire
+        waits too — a cancel, a call's result, another conversation's brief — which is why
+        the bound is short: SQLite answers in milliseconds, and only a locked ``state.db``
+        reaches it. 🔴 That one-at-a-time dispatch is also why the await here is safe: the
+        redelivery check runs before it and the request is registered after it, with no
+        other brief able to enter between.
+
+        🔴 When it cannot be answered, the answer is FRESH. A wrong "resumed" costs the
+        model its whole recalled history — it answers a conversation it cannot see. A
+        wrong "fresh" costs one extra read. The two mistakes are not the same size.
         """
         store = getattr(self, "_session_store", None)
-        if store is None:
-            return False
+        lookup = getattr(store, "lookup_by_session_key", None)
+        route = getattr(store, "get_or_create_session", None)
+        load = getattr(store, "load_transcript", None)
+        if not callable(lookup) or not callable(route) or not callable(load):
+            return True
+        key = self._session_key_for(source)
+
+        async def read() -> list:
+            known = await asyncio.to_thread(lookup, key)
+            if not getattr(known, "session_id", None):
+                return []
+            entry = await asyncio.to_thread(route, source, touch_activity=False)
+            return await asyncio.to_thread(load, entry.session_id)
+
         try:
-            key = build_session_key(source)
-            entries = getattr(store, "_entries", None)
-            if isinstance(entries, dict):
-                return key in entries
-            getter = getattr(store, "get_entry", None)
-            if callable(getter):
-                return getter(key) is not None
-        except Exception:  # noqa: BLE001 — an internal that moved costs a fresh session
-            return False
-        return False
+            history = await asyncio.wait_for(read(), SESSION_READ_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 — an internal that moved costs a fresh session
+            logger.warning(
+                "uffici: could not read Hermes's session for the brief (%s); treating it as fresh",
+                type(exc).__name__,
+            )
+            return True
+        return not history
 
     def _reset_session(self, source: Any) -> None:
         store = getattr(self, "_session_store", None)

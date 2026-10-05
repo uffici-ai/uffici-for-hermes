@@ -338,22 +338,27 @@ def test_a_store_without_a_reset_is_not_an_error() -> None:
     adapter._reset_session(adapter.build_source(chat_id="conv_1", chat_type="dm"))
 
 
-def test_a_store_exposing_get_entry_instead_of_entries_is_read() -> None:
+def test_a_store_that_can_only_be_looked_up_is_never_read_as_resumed() -> None:
+    """🔴 #2414: an index lookup is not Hermes's decision. A store offering ``get_entry``
+    (or ``_entries``) and no routing call cannot say whether the session survives the
+    route, so the answer is the safe one."""
+
     class Store:
+        _entries = {"agent:main:uffici:dm:conv_known": object()}
+
         def get_entry(self, key: str):
-            return object() if "conv_known" in key else None
+            return object()
 
     adapter, _ = adapter_with()
     adapter.set_session_store(Store())
     known = adapter.build_source(chat_id="conv_known", chat_type="dm")
-    unknown = adapter.build_source(chat_id="conv_other", chat_type="dm")
-    assert adapter._session_exists(known) is True
-    assert adapter._session_exists(unknown) is False
+    assert asyncio.run(adapter._session_is_fresh(known)) is True
 
 
 def test_no_store_at_all_means_fresh() -> None:
     adapter, _ = adapter_with()
-    assert adapter._session_exists(adapter.build_source(chat_id="c", chat_type="dm")) is False
+    source = adapter.build_source(chat_id="c", chat_type="dm")
+    assert asyncio.run(adapter._session_is_fresh(source)) is True
 
 
 # --------------------------------------------------------------- readiness

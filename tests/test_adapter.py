@@ -69,20 +69,82 @@ class FakeWire:
 
 
 class FakeStore:
-    """Hermes's session store, as much of it as this plugin touches."""
+    """Hermes's session store, as much of it as this plugin touches.
+
+    🔴 It ROUTES the way ``gateway/session.py`` does in the pinned Hermes (#2414):
+    ``get_or_create_session`` is where an entry that is ``suspended`` (``/stop``, the
+    stuck-restart counter) or whose row was ended in ``state.db`` is dropped and a NEW
+    session id is created in its place, with no transcript. The entry stays in
+    ``_entries`` until that moment, so a double that only held keys pinned the
+    defect: a key present, a session about to be replaced, an ack of ``resumed``.
+    """
 
     def __init__(self, keys: set[str] | None = None) -> None:
-        self._entries = dict.fromkeys(keys or set(), object())
+        self._entries: dict[str, types.SimpleNamespace] = {}
+        #: Each session id's transcript, as ``load_transcript`` returns it.
+        self.transcripts: dict[str, list[dict]] = {}
+        self._minted = 0
+        for key in keys or set():
+            self.seed(key)
         self.resets: list[str] = []
         #: Hermes's `resume_reason` on every session it marked `resume_pending` (#2306) —
         #: what a drain that times out does to every running one. None: no mark anywhere.
         self.resume_reason: str | None = None
         self.lookups: list[str] = []
+        #: Session ids whose state.db row was finalized while the gateway stayed alive.
+        self.ended: set[str] = set()
+        self.routed: list[str] = []
+        #: Each routing call's ``touch_activity``, in order.
+        self.touched: list[bool] = []
+
+    def _new_entry(self, key: str, *, prev: str | None = None) -> types.SimpleNamespace:
+        self._minted += 1
+        entry = types.SimpleNamespace(
+            session_key=key,
+            session_id=f"session_{self._minted}",
+            suspended=False,
+            was_auto_reset=prev is not None,
+            prev_session_id=prev,
+        )
+        self._entries[key] = entry
+        return entry
+
+    def seed(self, key: str) -> None:
+        """A session Hermes has run turns on: an entry with a transcript."""
+        entry = self._entries.get(key) or self._new_entry(key)
+        self.transcripts.setdefault(entry.session_id, []).append(
+            {"role": "user", "content": "an earlier turn"}
+        )
+
+    def _should_replace(self, entry: types.SimpleNamespace) -> bool:
+        """``_apply_route_checks``: suspended, or ended in the DB (#54878 upstream)."""
+        return entry.suspended or entry.session_id in self.ended
+
+    def get_or_create_session(self, source, force_new: bool = False, touch_activity: bool = True):
+        key = build_session_key(source)
+        self.routed.append(key)
+        self.touched.append(touch_activity)
+        entry = self._entries.get(key)
+        if entry is None:
+            return self._new_entry(key)
+        if self._should_replace(entry):
+            return self._new_entry(key, prev=entry.session_id)
+        return entry
+
+    def load_transcript(self, session_id: str) -> list[dict]:
+        return list(self.transcripts.get(session_id, []))
 
     def lookup_by_session_key(self, key: str):
+        """Hermes's public reader: the entry as it stands, nothing routed. ``session_id`` is
+        None for a key Hermes has no entry for (the real store answers None)."""
         self.lookups.append(key)
         reason = self.resume_reason if key else None
-        return types.SimpleNamespace(resume_pending=reason is not None, resume_reason=reason)
+        entry = self._entries.get(key)
+        return types.SimpleNamespace(
+            session_id=entry.session_id if entry else None,
+            resume_pending=reason is not None,
+            resume_reason=reason,
+        )
 
     def mark_every_session(self, reason: str) -> None:
         """What Hermes does to every running session when a drain times out."""
@@ -90,7 +152,9 @@ class FakeStore:
 
     def reset_session(self, key: str) -> None:
         self.resets.append(key)
-        self._entries.pop(key, None)
+        old = self._entries.get(key)
+        if old is not None:
+            self._new_entry(key, prev=old.session_id)
 
 
 def build(
@@ -289,7 +353,7 @@ def test_a_second_brief_on_the_same_conversation_is_resumed_and_asks_for_no_open
 
         # Hermes now has the session the first turn created.
         source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
-        adapter._session_store._entries[build_session_key(source)] = object()
+        adapter._session_store.seed(build_session_key(source))
 
         second = {**golden("brief"), "requestId": "req_2"}
         await adapter._on_frame(second)
@@ -331,7 +395,7 @@ def test_a_resumed_brief_carries_the_context_too() -> None:
         adapter, _ = build(FakeStore(), opener=golden("opener"))
         await adapter._on_frame(golden("brief-with-context"))
         source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
-        adapter._session_store._entries[build_session_key(source)] = object()
+        adapter._session_store.seed(build_session_key(source))
 
         edited = golden("brief-with-context")
         edited["requestId"] = "req_2"
@@ -372,7 +436,7 @@ def test_reset_session_forces_fresh_and_resets_first() -> None:
         store = FakeStore()
         adapter, wire = build(store)
         source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
-        store._entries[build_session_key(source)] = object()
+        store.seed(build_session_key(source))
 
         await adapter._on_frame({**golden("brief"), "resetSession": True})
         assert store.resets == [build_session_key(source)], "the session was not reset"
@@ -386,16 +450,200 @@ def test_an_unreadable_session_store_means_fresh() -> None:
     """🔴 The asymmetry, stated: a wrong "resumed" costs the model its whole
     recalled history; a wrong "fresh" costs one extra read."""
 
-    class Broken:
-        @property
-        def _entries(self):
+    class RoutingBroken(FakeStore):
+        def get_or_create_session(self, source, force_new=False, touch_activity=True):
             raise RuntimeError("the store moved")
 
+    class TranscriptBroken(FakeStore):
+        def load_transcript(self, session_id):
+            raise RuntimeError("TranscriptReadError")
+
+    class Bare:
+        """A store without either reader: a Hermes this plugin does not know."""
+
+    for store in (RoutingBroken(), TranscriptBroken(), Bare()):
+
+        async def scenario(store=store):
+            adapter, wire = build(store)
+            if isinstance(store, FakeStore):
+                # A session with history: only the broken read stands between it and
+                # `resumed`.
+                source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
+                store.seed(build_session_key(source))
+            await adapter._on_frame(golden("brief"))
+            await adapter._on_frame(golden("opener"))
+            assert wire.of_type("ack")[0]["session"] == "fresh", type(store).__name__
+
+        run(scenario())
+
+
+# 🔴 #2414: freshness is Hermes's ROUTING decision, never a key's presence. A session
+# Hermes is about to replace is still in `_entries` when the brief arrives; acking it
+# `resumed` sent no opener, and the model answered the conversation's newest messages
+# with none of what came before them.
+
+
+async def _second_brief_after(replace) -> tuple[UfficiAdapter, FakeWire]:
+    """One conversation: a first turn Hermes ran, then ``replace(store, key)``, then
+    the next brief. Returns the wire, carrying the second brief's ack and its opener."""
+    store = FakeStore()
+    adapter, wire = build(store, opener=golden("opener"))
+    source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
+    key = build_session_key(source)
+    store.seed(key)
+    replace(store, key)
+    wire.sent.clear()
+    await adapter._on_frame({**golden("brief"), "requestId": "req_after"})
+    assert len(adapter.handled) == 1, "the brief was never admitted"
+    return adapter, wire
+
+
+def _suspend(store: FakeStore, key: str) -> None:
+    """``/stop``, or the stuck-restart counter: ``suspended`` on the routing entry."""
+    store._entries[key].suspended = True
+
+
+def _end_in_db(store: FakeStore, key: str) -> None:
+    """The session's state.db row finalized while the gateway stayed alive."""
+    store.ended.add(store._entries[key].session_id)
+
+
+def _nothing(store: FakeStore, key: str) -> None:
+    return None
+
+
+@pytest.mark.parametrize("replace", [_suspend, _end_in_db], ids=["suspended", "ended-in-db"])
+def test_a_session_hermes_replaces_at_routing_is_acked_fresh_and_earns_an_opener(replace) -> None:
     async def scenario():
-        adapter, wire = build(Broken())
+        adapter, wire = await _second_brief_after(replace)
+        acks = wire.of_type("ack")
+        assert [a["session"] for a in acks] == ["fresh"], (
+            "a session Hermes replaced on routing was acked as resumed"
+        )
+        # The opener is the companion's answer to the fresh ack: the turn the new
+        # session runs carries the conversation before the delta.
+        assert OPENER_HEADER in (adapter.handled[0].channel_context or ""), (
+            "the replaced session's turn ran without the opener"
+        )
+
+    run(scenario())
+
+
+def test_a_session_hermes_keeps_is_still_resumed() -> None:
+    """The other half: a healthy entry with a transcript stays `resumed`, with no opener."""
+
+    async def scenario():
+        adapter, wire = await _second_brief_after(_nothing)
+        assert [a["session"] for a in wire.of_type("ack")] == ["resumed"]
+        assert OPENER_HEADER not in (adapter.handled[0].channel_context or "")
+
+    run(scenario())
+
+
+def test_an_older_hermes_that_resets_by_time_is_acked_fresh() -> None:
+    """Before `v2026.9.24`, Hermes's `SessionResetPolicy` replaced an idle session at
+    routing time (1440 minutes idle, or daily at 04:00) — the same path, on a clock."""
+
+    class TimedStore(FakeStore):
+        idle_expired = False
+
+        def _should_replace(self, entry):
+            return self.idle_expired or super()._should_replace(entry)
+
+    async def scenario():
+        store = TimedStore()
+        adapter, wire = build(store, opener=golden("opener"))
+        source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
+        store.seed(build_session_key(source))
+        store.idle_expired = True
         await adapter._on_frame(golden("brief"))
-        await adapter._on_frame(golden("opener"))
-        assert wire.of_type("ack")[0]["session"] == "fresh"
+        assert [a["session"] for a in wire.of_type("ack")] == ["fresh"]
+        assert OPENER_HEADER in (adapter.handled[0].channel_context or "")
+
+    run(scenario())
+
+
+def test_the_turn_runs_on_the_session_the_freshness_was_read_from() -> None:
+    """The plugin routes through the store's own call, so the turn's own routing a
+    moment later lands on the SAME session — never a second replacement."""
+
+    async def scenario():
+        store = FakeStore()
+        adapter, _ = build(store, opener=golden("opener"))
+        source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
+        key = build_session_key(source)
+        store.seed(key)
+        _suspend(store, key)
+        await adapter._on_frame(golden("brief"))
+        assert store.routed == [key], "the plugin routed the brief more or less than once"
+        replaced = store._entries[key].session_id
+        minted = store._minted
+        assert store.get_or_create_session(source).session_id == replaced
+        assert store._minted == minted, "the turn's routing replaced the session a second time"
+        assert store.touched[0] is False, "the plugin's routing moved the activity clock"
+
+    run(scenario())
+
+
+def test_a_new_conversation_is_fresh_and_the_plugin_creates_no_session() -> None:
+    """With no entry there is nothing to replace: the turn's own routing creates the session,
+    so Hermes still sees it as new (created_at == updated_at) and fires ``session:start``."""
+
+    async def scenario():
+        store = FakeStore()
+        adapter, wire = build(store, opener=golden("opener"))
+        await adapter._on_frame(golden("brief"))
+        assert [a["session"] for a in wire.of_type("ack")] == ["fresh"]
+        assert store.routed == [], "the plugin created the session the turn should create"
+        assert store._entries == {}
+
+    run(scenario())
+
+
+def test_a_reset_marked_entry_with_history_is_still_resumed() -> None:
+    """The shortcuts the plugin must NOT take: ``was_auto_reset`` and ``prev_session_id`` stay
+    on an entry after the replaced session's first turn, so reading either as fresh would
+    send an opener on every turn after a reset."""
+
+    async def scenario():
+        store = FakeStore()
+        adapter, wire = build(store, opener=golden("opener"))
+        source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
+        key = build_session_key(source)
+        store.seed(key)
+        _suspend(store, key)
+        store.get_or_create_session(source)  # Hermes replaces it: was_auto_reset, prev set
+        store.seed(key)  # and the new session's first turn ran
+        assert store._entries[key].was_auto_reset and store._entries[key].prev_session_id
+        await adapter._on_frame(golden("brief"))
+        assert [a["session"] for a in wire.of_type("ack")] == ["resumed"]
+
+    run(scenario())
+
+
+def test_a_session_store_that_does_not_answer_in_time_means_fresh(monkeypatch) -> None:
+    """A store stuck on a locked ``state.db`` must not hold the ack: past the bound, fresh."""
+    import threading
+
+    release = threading.Event()
+
+    class Stuck(FakeStore):
+        def load_transcript(self, session_id):
+            release.wait(5)
+            return [{"role": "user", "content": "history"}]
+
+    monkeypatch.setattr(adapter_module, "SESSION_READ_TIMEOUT_SECONDS", 0.05)
+
+    async def scenario():
+        store = Stuck()
+        adapter, wire = build(store, opener=golden("opener"))
+        source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
+        store.seed(build_session_key(source))
+        try:
+            await adapter._on_frame(golden("brief"))
+        finally:
+            release.set()
+        assert [a["session"] for a in wire.of_type("ack")] == ["fresh"]
 
     run(scenario())
 
@@ -467,7 +715,7 @@ def test_a_refused_resumed_brief_is_acked_then_closed_with_a_done() -> None:
         store = FakeStore()
         adapter, wire = build(store)
         source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
-        store._entries[build_session_key(source)] = object()
+        store.seed(build_session_key(source))
 
         async def refuse(_event):
             return False
@@ -671,7 +919,7 @@ def test_a_release_resets_the_conversations_session_and_logs_ids_only(caplog) ->
         store = FakeStore()
         adapter, _ = build(store)
         source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
-        store._entries[build_session_key(source)] = object()
+        store.seed(build_session_key(source))
         with caplog.at_level("INFO"):
             await adapter._on_frame(golden("release-pass-ended"))
         assert store.resets == [build_session_key(source)]
@@ -867,7 +1115,7 @@ def test_after_a_supersede_the_next_brief_starts_a_new_turn() -> None:
         await adapter._on_frame(golden("cancel-superseded"))
 
         source = adapter.build_source(chat_id="conv_01J8ZQ7X4K2M9P0Q", chat_type=CHAT_TYPE)
-        adapter._session_store._entries[build_session_key(source)] = object()
+        adapter._session_store.seed(build_session_key(source))
         await adapter._on_frame({**golden("brief"), "requestId": "req_2"})
 
         assert wire.of_type("ack")[-1] == {

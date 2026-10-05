@@ -40,8 +40,10 @@ Uffici conversation**, and what the session sends is the agent's answer.
 
 - A Hermes you run as a **gateway** (`hermes gateway`), since the plugin is a gateway
   platform. The plugin is written against **Hermes 0.21.5** (commit `f97608f1`, release
-  `v2026.9.24`): its adapter uses that version's platform interfaces, and a different version
-  may load but is untested.
+  `v2026.9.24`) and supports `>=0.21.5,<0.22`: its adapter uses those versions' platform
+  interfaces. A Hermes outside the range still connects and answers, but may misbehave without
+  an error, so the plugin logs a warning when it connects and `uffici doctor` shows the
+  harness as not supported.
 - Python 3.13, which is what Hermes's own environment provides. The plugin runs inside that
   environment and depends only on libraries Hermes already ships (`websockets`, `httpx`).
 - The [Uffici companion](https://github.com/uffici-ai/uffici-companion) on the same machine
@@ -270,6 +272,10 @@ keeps — never in files on this machine.
   its gateway connects, and the memory settings above that no longer hold — read through
   Hermes's own configuration readers. The doctor prints them as `drift` lines. They are a
   report, never a block: nothing about them stops a connection or a turn.
+- **`uffici doctor` shows whether this Hermes is one the plugin supports.** At every connect
+  the plugin also sends the Hermes versions it supports and its verdict on the running one;
+  the doctor prints them on its `harness` line. An unsupported Hermes still connects and
+  answers, and the plugin logs a warning when it connects.
 
 ## What it is not
 

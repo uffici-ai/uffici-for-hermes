@@ -36,6 +36,12 @@ passed, so each is checked here against Hermes's own code:
   Hermes would start, a platform its gateway would connect besides Uffici, and Hermes's
   own memory back on must each be reported, through Hermes's own readers — and the
   configuration ``uffici setup`` writes must report none of them.
+- **A brief's freshness is Hermes's routing decision.** The plugin routes through the
+  store's own ``get_or_create_session`` and reads ``load_transcript`` on the session it
+  returns: a new conversation, a session ``/stop`` suspended and one whose row was ended
+  in ``state.db`` must each route to a session with no transcript (``fresh``), and a
+  session with turns must route to itself (``resumed``). And the Hermes this probe runs
+  in must be inside the range the plugin declares.
 - **Hermes's own log lines reach a root handler.** The plugin ships them with one
   handler on the root logger: that works only while Hermes logs a turn through
   Python ``logging`` on a named logger that propagates, with the root at INFO or
@@ -637,6 +643,90 @@ def drift_reads_hermes_own_config(factory, manifest: dict) -> str | None:
     return None
 
 
+def freshness_is_hermes_routing(factory) -> str | None:
+    """The plugin's ``fresh`` / ``resumed`` against a REAL session store (#2414).
+
+    The suite's store double routes the way ``gateway/session.py`` does; this holds the
+    double to Hermes: each way Hermes replaces a session at routing must read ``fresh``,
+    and the session the plugin read must be the one the turn's own routing then lands on.
+    """
+    import asyncio
+    import importlib
+    import tempfile
+    import threading
+
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.session import SessionStore, build_session_key
+    from hermes_cli import __version__ as hermes_version
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    package = factory.__module__.rsplit(".", 1)[0]
+    support = importlib.import_module(f"{package}.support")
+    if support.harness_support(hermes_version).get("supported") is not True:
+        return (
+            f"the probe's Hermes {hermes_version} is outside the plugin's "
+            f"{support.SUPPORTED_RANGE}"
+        )
+
+    if "touch_activity" not in inspect.signature(SessionStore.get_or_create_session).parameters:
+        return "Hermes's routing call no longer takes touch_activity, which the plugin passes"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        token = set_hermes_home_override(home)
+        try:
+            store = SessionStore(Path(home, "sessions"), GatewayConfig())
+            # The plugin calls the store from a worker thread, as Hermes's own async facade
+            # does: that is safe only while the store guards its index with a thread lock.
+            if not isinstance(getattr(store, "_lock", None), type(threading.Lock())):
+                return "Hermes's session store no longer guards its index with a thread lock"
+            adapter = factory(PlatformConfig(enabled=True))
+            adapter.set_session_store(store)
+            source = adapter.build_source(chat_id="conv_probe", chat_type="dm")
+            key = build_session_key(source)
+
+            def fresh() -> bool:
+                return asyncio.run(adapter._session_is_fresh(source))  # noqa: SLF001
+
+            def a_turn() -> str:
+                session_id = store.get_or_create_session(source).session_id
+                for role in ("user", "assistant"):
+                    store.append_to_transcript(session_id, {"role": role, "content": "probe"})
+                return session_id
+
+            if not fresh():
+                return "a conversation Hermes has never seen read as resumed"
+            # The turn creates a new conversation's session, so Hermes still sees it as new
+            # (created_at == updated_at) and fires session:start.
+            if store.lookup_by_session_key(key) is not None:
+                return "the plugin's read created the session the turn should create"
+            ran = a_turn()
+            if fresh():
+                return "a session with turns read as fresh"
+            if store.get_or_create_session(source).session_id != ran:
+                return "a healthy session did not route to itself"
+            if not store.suspend_session(key):
+                return "Hermes could not suspend the probe's session"
+            if not fresh():
+                return "a session /stop suspended read as resumed"
+            entry = store.lookup_by_session_key(key)
+            replaced = entry.session_id
+            if replaced == ran:
+                return "Hermes did not replace the suspended session at routing"
+            # The turn's own new-session handling keys off this flag, which the plugin's
+            # routing must leave for it to consume.
+            if not getattr(entry, "was_auto_reset", False):
+                return "the replaced session lost was_auto_reset before the turn could act on it"
+            if store.get_or_create_session(source).session_id != replaced:
+                return "the turn's routing landed on another session than the one read"
+            ended = a_turn()
+            store._db_for_session_id(ended).end_session(ended, "session_reset")  # noqa: SLF001
+            if not fresh():
+                return "a session ended in state.db read as resumed"
+        finally:
+            reset_hermes_home_override(token)
+    return None
+
+
 def harness_logs_reach_a_root_handler(factory) -> str | None:
     """A turn's INFO line, from Hermes's own logger, reaches the plugin's root handler."""
     import logging
@@ -707,6 +797,7 @@ def main(argv: list[str]) -> int:
         ("built-in memory", lambda: builtin_memory_is_off(manifest)),
         ("memory prefetch", lambda: prefetch_lands_fenced_on_the_user_side(factory)),
         ("harness drift", lambda: drift_reads_hermes_own_config(factory, manifest)),
+        ("session freshness", lambda: freshness_is_hermes_routing(factory)),
     ]
     for name, check in checks:
         failure = check()

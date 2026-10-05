@@ -168,9 +168,11 @@ def plugin_hello(
     plugin_version: str,
     budget_tokens: int,
     drift: dict[str, list[str]] | None = None,
+    harness_support: dict[str, Any] | None = None,
 ) -> dict:
     """The first frame, carrying the token — and, when the plugin read it, the harness's
-    drift from the plugin policy (#2406, ``drift.py``)."""
+    drift from the plugin policy (#2406, ``drift.py``) and the Hermes versions this release
+    supports with its verdict on the running one (#2414, ``support.py``)."""
     hello = {
         "v": WIRE_VERSION,
         "type": "hello",
@@ -183,6 +185,8 @@ def plugin_hello(
     }
     if drift is not None:
         hello["drift"] = drift
+    if harness_support is not None:
+        hello["harnessSupport"] = harness_support
     return hello
 
 
@@ -243,6 +247,7 @@ class WireClient:
         budget_tokens: int,
         connect_fn: Callable[[WireAddress], Awaitable[Any]],
         drift: Callable[[], Awaitable[dict[str, list[str]] | None]] | None = None,
+        harness_support: dict[str, Any] | None = None,
         on_frame: Callable[[dict[str, Any]], Awaitable[None]],
         on_connected: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         on_disconnected: Callable[[], None] | None = None,
@@ -254,6 +259,7 @@ class WireClient:
         self._plugin_version = plugin_version
         self._budget_tokens = budget_tokens
         self._drift = drift
+        self._harness_support = harness_support
         self._connect_fn = connect_fn
         self._on_frame = on_frame
         self._on_connected = on_connected
@@ -329,6 +335,7 @@ class WireClient:
                 self._plugin_version,
                 self._budget_tokens,
                 drift,
+                self._harness_support,
             )
             await connection.send(encode_frame(hello))
             async for raw in connection:

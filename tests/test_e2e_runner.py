@@ -241,6 +241,44 @@ def test_each_restart_the_companion_asks_for_is_made_once() -> None:
     assert e2e.restarts_owed(_log(asked, other, asked), 1) == 1
 
 
+def test_each_session_end_the_companion_asks_for_is_made_once_for_its_conversation() -> None:
+    """#2414: an `endHarnessSession` step names a conversation only this runner can reach
+    inside Hermes; each is ended once, in the order asked."""
+    first = {"msg": e2e.END_SESSION_LINE, "conversation": "conv_ci_invoices"}
+    second = {"msg": e2e.END_SESSION_LINE, "conversation": "conv_ci_ledger"}
+    other = {"msg": e2e.RESTART_HARNESS}
+    assert e2e.session_ends_owed(_log(other), 0) == []
+    assert e2e.session_ends_owed(_log(first, other), 0) == ["conv_ci_invoices"]
+    assert e2e.session_ends_owed(_log(first, other), 1) == []
+    assert e2e.session_ends_owed(_log(first, other, second), 1) == ["conv_ci_ledger"]
+
+
+def test_a_session_is_ended_inside_the_gateway_as_hermes(monkeypatch) -> None:
+    """Inside the running gateway's container, as Hermes's user, with the helper on stdin
+    and the conversation as its argument."""
+    seen: dict = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"], seen["kwargs"] = args, kwargs
+        return e2e.subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(e2e.subprocess, "run", fake_run)
+    e2e.end_harness_session("hermes-container", "conv_ci_invoices")
+    assert seen["args"] == [
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "hermes",
+        "hermes-container",
+        e2e.HERMES_PYTHON,
+        "-",
+        "conv_ci_invoices",
+    ]
+    assert "db.end_session(session_id, END_REASON)" in seen["kwargs"]["input"]
+    assert seen["kwargs"]["timeout"] == e2e.CONTRACT_TIMEOUT_S
+
+
 SHIPPED = {
     "msg": e2e.LOGS_SHIPPED,
     "companion": 12,

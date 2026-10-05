@@ -71,6 +71,11 @@ SHUTTING_DOWN = "shutting_down"
 RESTART_HARNESS = "restart the harness"
 # How long Hermes gets to shut down on a restart before Docker kills it.
 RESTART_GRACE_S = 30
+# What the companion logs when an `endHarnessSession` step wants one conversation's
+# Hermes session ended under the live gateway (#2414), with the conversation's id as
+# `conversation`. `end_session.py` does it, inside the gateway's container.
+END_SESSION_LINE = "end the harness session"
+END_SESSION = DEV / "end_session.py"
 
 
 class Failure(Exception):
@@ -206,6 +211,30 @@ def builtin_memory_files(container: str) -> str:
 def restarts_owed(lines: list[dict], done: int) -> int:
     """How many harness restarts the companion has asked for that this run has not made."""
     return max(0, sum(1 for line in lines if line.get("msg") == RESTART_HARNESS) - done)
+
+
+def session_ends_owed(lines: list[dict], done: int) -> list[str]:
+    """The conversations whose Hermes session the companion asked this run to end, and that
+    it has not ended yet, in the order asked."""
+    asked = [
+        str(line.get("conversation") or "")
+        for line in lines
+        if line.get("msg") == END_SESSION_LINE
+    ]
+    return asked[done:]
+
+
+def end_harness_session(container: str, conversation: str) -> subprocess.CompletedProcess[str]:
+    """End one conversation's session inside the running gateway's container, as Hermes's
+    own user (``end_session.py``)."""
+    return subprocess.run(
+        ["docker", "exec", "-i", "-u", "hermes", container, HERMES_PYTHON, "-", conversation],
+        input=END_SESSION.read_text(encoding="utf-8"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=CONTRACT_TIMEOUT_S,
+    )
 
 
 def harness_failures(hermes_log: str, mock_log: str) -> list[str]:
@@ -536,6 +565,7 @@ def run(version: str, fixture_dir: Path) -> None:
 
         deadline = time.monotonic() + SCRIPT_TIMEOUT_S
         restarts = 0
+        ended = 0
         exit_code = exit_code_of(companion)
         while exit_code is None and time.monotonic() < deadline:
             time.sleep(1)
@@ -549,6 +579,22 @@ def run(version: str, fixture_dir: Path) -> None:
                 )
                 if restart.returncode != 0:
                     raise Failure("the Hermes container would not restart", the_other_side())
+            for conversation in session_ends_owed(log_lines(follower.text), ended):
+                ended += 1
+                print(f"\n── ending Hermes's session of {conversation} ({ended})", flush=True)
+                try:
+                    end = end_harness_session(hermes, conversation)
+                except subprocess.TimeoutExpired as exc:
+                    raise Failure(
+                        f"Hermes's session of {conversation} could not be ended in time",
+                        the_other_side(),
+                    ) from exc
+                print(redact(end.stdout, token), end="", flush=True)
+                if end.returncode != 0:
+                    raise Failure(
+                        f"Hermes's session of {conversation} could not be ended",
+                        redact(end.stdout + end.stderr, token),
+                    )
             exit_code = exit_code_of(companion)
         if exit_code is None:
             raise Failure("the scripted conversation did not finish in time", the_other_side())
@@ -559,6 +605,11 @@ def run(version: str, fixture_dir: Path) -> None:
         failures = (
             verdict_failures(lines, exit_code, expects_tool_call=expects_tool_call)
             + shipped_log_failures(lines, restarts)
+            + [
+                f"the companion asked to end the session of {conversation}, "
+                "which this run never did"
+                for conversation in session_ends_owed(lines, ended)
+            ]
             + harness_failures(container_logs(hermes), container_logs(mock))
             + context_failures(container_logs(mock), CONTEXT_CANARY in fixture_text)
             + memory_failures(container_logs(mock), fixture_text, builtin_memory_files(hermes))
