@@ -1,0 +1,15 @@
+{
+  "hits": [
+    {
+      "urn": "urn:uffici:fact:9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "level": "conversation",
+      "distance": 0.18,
+      "text": "The Lisbon client is now invoiced on the 10th.",
+      "at": "2026-10-04T10:00:00.000Z",
+      "source": {
+        "kind": "remembered"
+      }
+    }
+  ],
+  "degraded": false
+}

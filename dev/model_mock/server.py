@@ -70,6 +70,24 @@ TOOL_CALL_ID = "call_mock_tool"
 #: it by default, and ``tool_call {calls: [{name, arguments}]}`` invokes one.
 BRIDGE_CALL = "tool_call"
 
+#: 🔴 A marker a script puts in ONE message to make that turn REMEMBER (#2386): the model
+#: calls ``uffici_remember`` — offered directly, or behind Hermes's tool search — with a
+#: fact carrying the memory canary below. A later turn whose question shares a word with
+#: the fact must then find the canary in Hermes's ``<memory-context>`` on the USER side,
+#: recalled by the plugin's prefetch before the call.
+MEMORY_MARKER = os.environ.get("MODEL_MOCK_MEMORY_MARKER", "[remember-this]")
+MEMORY_TOOL = "uffici_remember"
+MEMORY_CALL_ID = "call_mock_remember"
+MEMORY_CANARY = os.environ.get("MODEL_MOCK_MEMORY_CANARY", "[memory-canary]")
+MEMORY_FACT = f"Invoices for the Lisbon client go out on the 10th. {MEMORY_CANARY}"
+
+#: The sentence a turn's recall carries when the platform's memory is down — matched by a
+#: fixed fragment of the platform's instruction, inside the same fence.
+MEMORY_UNAVAILABLE_FRAGMENT = "Memory was unavailable because of a system problem"
+
+#: Hermes's fence around a prefetch (``agent/memory_manager.py``).
+MEMORY_FENCE_OPEN, MEMORY_FENCE_CLOSE = "<memory-context>", "</memory-context>"
+
 #: 🔴 The brief's context must reach the model on the SYSTEM side (the context fixture
 #: carries this canary in its organization block). Reported per request as a boolean,
 #: never as text: ``system_canary`` (in a system message) and ``user_canary`` (in any
@@ -163,29 +181,32 @@ def _offered_names(payload: dict) -> list[str]:
     return names
 
 
-def _tool_route(payload: dict) -> str | None:
-    """How a marked turn can reach ``list_boards``: ``direct`` when it is offered by name,
+def _tool_route(payload: dict, tool: str = TOOL_NAME) -> str | None:
+    """How a marked turn can reach ``tool``: ``direct`` when it is offered by name,
     ``bridge`` when Hermes deferred it behind its tool search and the bridge's listing names
     it, None when this request cannot reach it at all — a model calls only what it is given.
     """
     names = _offered_names(payload)
-    if TOOL_NAME in names:
+    if tool in names:
         return "direct"
-    if BRIDGE_CALL in names and TOOL_NAME in json.dumps(payload.get("tools") or []):
+    if BRIDGE_CALL in names and tool in json.dumps(payload.get("tools") or []):
         return "bridge"
     return None
 
 
-def _tool_call(route: str) -> dict:
+def _tool_call(
+    route: str, tool: str = TOOL_NAME, call_id: str = TOOL_CALL_ID, arguments: dict | None = None
+) -> dict:
     """The one call a marked turn makes, by the route the request offers."""
+    arguments = arguments or {}
     if route == "direct":
-        name, arguments = TOOL_NAME, {}
+        name, wrapped = tool, arguments
     else:
-        name, arguments = BRIDGE_CALL, {"calls": [{"name": TOOL_NAME, "arguments": {}}]}
+        name, wrapped = BRIDGE_CALL, {"calls": [{"name": tool, "arguments": arguments}]}
     return {
-        "id": TOOL_CALL_ID,
+        "id": call_id,
         "type": "function",
-        "function": {"name": name, "arguments": json.dumps(arguments)},
+        "function": {"name": name, "arguments": json.dumps(wrapped)},
     }
 
 
@@ -201,12 +222,22 @@ def _tool_text(content: object) -> str:
     return str(content or "")
 
 
-def _uffici_tool_result(payload: dict) -> str | None:
-    """The tool's result, when this request resumes a turn after its ``list_boards`` call."""
+def _uffici_tool_result(payload: dict, call_id: str = TOOL_CALL_ID) -> str | None:
+    """The tool's result, when this request resumes a turn after the marked call."""
     last = _last_tool_message(payload)
-    if last is None or last.get("tool_call_id") != TOOL_CALL_ID:
+    if last is None or last.get("tool_call_id") != call_id:
         return None
     return _tool_text(last.get("content"))
+
+
+def _fenced(text: str) -> list[str]:
+    """Every ``<memory-context>`` block in ``text``, without its fence."""
+    blocks, rest = [], text
+    while MEMORY_FENCE_OPEN in rest:
+        rest = rest.split(MEMORY_FENCE_OPEN, 1)[1]
+        block, _, rest = rest.partition(MEMORY_FENCE_CLOSE)
+        blocks.append(block)
+    return blocks
 
 
 def _clarify_result(payload: dict) -> str | None:
@@ -217,8 +248,8 @@ def _clarify_result(payload: dict) -> str | None:
     answer, as text.
     """
     last = _last_tool_message(payload)
-    if last is None or last.get("tool_call_id") == TOOL_CALL_ID:
-        # Not a clarify answer: no tool spoke last, or it was the marked turn's own tool.
+    if last is None or last.get("tool_call_id") in (TOOL_CALL_ID, MEMORY_CALL_ID):
+        # Not a clarify answer: no tool spoke last, or it was a marked turn's own tool.
         return None
     content = last.get("content")
     try:
@@ -435,6 +466,21 @@ class Handler(BaseHTTPRequestHandler):
         )
         if tool_result is not None:
             text = f"{REPLY_PREFIX}the tool said: {tool_result[:500]}"
+        # Memory (#2386): the marked turn remembers the canary's fact, and the turn it
+        # resumes says the platform answered.
+        remembered = _uffici_tool_result(payload, MEMORY_CALL_ID)
+        memory_route = _tool_route(payload, MEMORY_TOOL)
+        remembers = (
+            answered is None
+            and tool_result is None
+            and remembered is None
+            and not uses_tool
+            and bool(MEMORY_MARKER)
+            and MEMORY_MARKER in asked
+            and memory_route is not None
+        )
+        if remembered is not None:
+            text = f"{REPLY_PREFIX}remembered: {remembered[:200]}"
 
         # 🔴 One line per request, and it carries NO transcript content — counts,
         # booleans, lengths, and the ROLES of the last four messages (the shape of
@@ -452,6 +498,11 @@ class Handler(BaseHTTPRequestHandler):
         system_canary = bool(CONTEXT_CANARY) and CONTEXT_CANARY in system_text
         user_canary = bool(CONTEXT_CANARY) and CONTEXT_CANARY in other_text
         system_missing = CONTEXT_MISSING_FRAGMENT in system_text
+        # 🔴 Where a recall landed: inside Hermes's fence, on the USER side. Never text.
+        recalled_blocks = _fenced(other_text)
+        memory_recalled = any(MEMORY_CANARY in block for block in recalled_blocks)
+        memory_unavailable = any(MEMORY_UNAVAILABLE_FRAGMENT in b for b in recalled_blocks)
+        memory_system = bool(MEMORY_CANARY) and MEMORY_CANARY in system_text
         if system_canary and text:
             text += CONTEXT_SEEN_MARKER
 
@@ -466,11 +517,20 @@ class Handler(BaseHTTPRequestHandler):
             f"tools={len(payload.get('tools') or [])} "
             f"system_canary={system_canary} user_canary={user_canary} "
             f"system_missing={system_missing} "
+            f"remembers={remembers} remembered={remembered is not None} "
+            f"memory_recalled={memory_recalled} memory_unavailable={memory_unavailable} "
+            f"memory_system={memory_system} "
             f"roles={','.join(str(m.get('role')) for m in (payload.get('messages') or [])[-4:])}",
             flush=True,
         )
 
-        call = _clarify_call() if asks else _tool_call(route) if uses_tool else None
+        call = (
+            _clarify_call() if asks
+            else _tool_call(route) if uses_tool
+            else _tool_call(memory_route, MEMORY_TOOL, MEMORY_CALL_ID, {"text": MEMORY_FACT})
+            if remembers
+            else None
+        )
         if call is not None:
             if wants_stream:
                 self._stream_tool_call(call)

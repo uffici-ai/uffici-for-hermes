@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/memory.forget.result.schema.json",
+  "title": "memory.forget result",
+  "description": "companion \u2192 plugin, the payload of the `result` answering a `memory.forget`: the fact, and the URN that now supersedes it.",
+  "type": "object",
+  "required": [
+    "urn",
+    "supersededBy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "urn": {
+      "type": "string",
+      "pattern": "^urn:uffici:fact:[0-9a-fA-F-]{36}$"
+    },
+    "supersededBy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}

@@ -533,6 +533,76 @@ async def _run_followup_processing_hook(
     await run_hook(hook_name, event, *args)
 
 
+# ----------------------------------------------------------------- agent.memory_provider
+
+
+class MemoryProvider(ABC):
+    """TRANSCRIBED (v2026.9.24 ``agent/memory_provider.py``): the four abstract members a
+    provider must define, and the defaults of the hooks this plugin overrides. Hermes's
+    memory manager runs ``prefetch`` on a thread of its own, bounded by
+    ``_EXTERNAL_PREFETCH_TIMEOUT_S`` (8.0 s), and fences a non-empty answer into
+    ``<memory-context>``. ``dev/hermes_contract.py`` checks the real ones."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def initialize(self, session_id: str, **kwargs: Any) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def system_prompt_block(self) -> str:
+        return ""
+
+    def prefetch(self, query: str, *, session_id: str = "") -> str:
+        return ""
+
+    def recall_status(self) -> Any:
+        return None
+
+    def sync_turn(self, user_content: str, assistant_content: str, **_: Any) -> None:
+        return None
+
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
+        return ""
+
+
+@dataclass(frozen=True)
+class RecallStatus:
+    """TRANSCRIBED: what the last prefetch injected, for Hermes's recall indicator."""
+
+    provider_label: str
+    count: int
+    glyph: str = "🧠"
+
+
+class ProviderCollector:
+    """TRANSCRIBED in shape (``plugins/memory/__init__.py``, ``_ProviderCollector``): it
+    declares ``register_memory_provider`` and forwards every other ``register_*`` through
+    ``__getattr__`` — recorded here, so a test sees a second platform registration."""
+
+    def __init__(self) -> None:
+        self.provider: Any = None
+        self.forwarded: list[str] = []
+
+    def register_memory_provider(self, provider: Any) -> None:
+        self.provider = provider
+
+    def __getattr__(self, attr: str) -> Any:
+        if not attr.startswith("register_"):
+            raise AttributeError(attr)
+        return lambda *_a, **_k: self.forwarded.append(attr)
+
+
 # --------------------------------------------------------------------------- installation
 
 
@@ -574,6 +644,11 @@ def _install() -> None:
     session_context.get_session_env = get_session_env
     session_context.set_session_vars = set_session_vars
 
+    agent = types.ModuleType("agent")
+    memory_provider = types.ModuleType("agent.memory_provider")
+    memory_provider.MemoryProvider, memory_provider.RecallStatus = MemoryProvider, RecallStatus
+    agent.memory_provider = memory_provider
+
     gateway.config, gateway.session, gateway.platforms = config, session, platforms
     gateway.session_context = session_context
     gateway.run_turn_followup_ack = followup
@@ -588,6 +663,8 @@ def _install() -> None:
         "gateway.platforms.base": base,
         "gateway.platforms.event": event,
         "tools": tools,
+        "agent": agent,
+        "agent.memory_provider": memory_provider,
         "tools.approval": approval,
         "tools.clarify_gateway": clarify,
     }.items():

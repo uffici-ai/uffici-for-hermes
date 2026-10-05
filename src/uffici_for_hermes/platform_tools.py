@@ -35,6 +35,7 @@ its result — they are tenant content.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import logging
@@ -133,12 +134,53 @@ def session_conversation() -> str | None:
     return str(get_session_env(SESSION_CHAT_ID, "") or "") or None
 
 
-def _refusal(message: str, error_class: str | None = None) -> str:
+def refusal(message: str, error_class: str | None = None) -> str:
     """A result the model reads as an error: Hermes's own ``{"error": …}`` shape."""
     body: dict[str, Any] = {"error": message}
     if error_class:
         body["errorClass"] = error_class
     return json.dumps(body, ensure_ascii=False)
+
+
+def run_on_loop(
+    loop: asyncio.AbstractEventLoop | None,
+    make: Callable[[], Awaitable[str]],
+    *,
+    wait_seconds: float,
+    tool: str,
+) -> str:
+    """Run one call's coroutine on the call tunnel's loop from a Hermes worker thread, and
+    wait for its answer there — or answer for it, saying why.
+
+    Shared by the platform's tools and the memory family: a tool handler and a prefetch
+    both run in a thread Hermes owns, while every call is made on the gateway's loop.
+    """
+    if loop is None or loop.is_closed():
+        return refusal(INSTRUCTIONS["unknown_op"], "unknown_op")
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        # Blocking the loop the answer has to arrive on would hang the gateway.
+        logger.error(
+            "uffici: a tool was dispatched on the event loop itself; refused",
+            extra={"tool": tool},
+        )
+        return refusal(CANNOT_WAIT_HERE)
+    try:
+        future = asyncio.run_coroutine_threadsafe(make(), loop)
+    except RuntimeError:
+        # The loop closed between the check above and the hand-off.
+        return refusal(INSTRUCTIONS["unknown_op"], "unknown_op")
+    try:
+        return future.result(timeout=wait_seconds)
+    except TimeoutError:
+        future.cancel()
+        return refusal(INSTRUCTIONS["timed_out"], "timed_out")
+    except concurrent.futures.CancelledError:
+        # The gateway cancelled the call (a shutdown or a reconnect): answered, never raised.
+        return refusal(INSTRUCTIONS["upstream_failed"], "upstream_failed")
 
 
 def catalog_entries(payload: Any) -> dict[str, dict[str, Any]] | None:
@@ -382,31 +424,17 @@ class PlatformTools:
         # 🔴 HERE, in the calling thread, per call: the turn's session is this thread's
         # ContextVars, and two conversations' turns call at the same time.
         conversation_id = self._session_reader()
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            return _refusal(INSTRUCTIONS["unknown_op"], "unknown_op")
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is loop:
-            # Blocking the loop the answer has to arrive on would hang the gateway.
-            logger.error(
-                "uffici: a tool was dispatched on the event loop itself; refused",
-                extra={"tool": name},
-            )
-            return _refusal(CANNOT_WAIT_HERE)
-        future = asyncio.run_coroutine_threadsafe(self.invoke(conversation_id, name, args), loop)
-        try:
-            return future.result(timeout=CALL_DEADLINE_MS / 1000 + THREAD_GRACE_SECONDS)
-        except TimeoutError:
-            future.cancel()
-            return _refusal(INSTRUCTIONS["timed_out"], "timed_out")
+        return run_on_loop(
+            self._loop,
+            lambda: self.invoke(conversation_id, name, args),
+            wait_seconds=CALL_DEADLINE_MS / 1000 + THREAD_GRACE_SECONDS,
+            tool=name,
+        )
 
     async def invoke(self, conversation_id: str | None, name: str, args: Any) -> str:
         """One tool call on the request open on ``conversation_id``, on the event loop."""
         if name not in self._catalog:
-            return _refusal(NO_LONGER_AVAILABLE)
+            return refusal(NO_LONGER_AVAILABLE)
         request_id = self._request_for(conversation_id) if conversation_id else None
         if not request_id:
             # 🔴 Refused HERE, without the tunnel: a call with no request would have to
@@ -416,9 +444,9 @@ class PlatformTools:
                 name,
                 extra={"tool": name},
             )
-            return _refusal(OUTSIDE_A_REQUEST)
+            return refusal(OUTSIDE_A_REQUEST)
         if not self._enabled():
-            return _refusal(INSTRUCTIONS["unknown_op"], "unknown_op")
+            return refusal(INSTRUCTIONS["unknown_op"], "unknown_op")
         answered = await self._call(
             "tools.call",
             {
@@ -429,7 +457,7 @@ class PlatformTools:
             deadline_ms=CALL_DEADLINE_MS,
         )
         if not answered.ok:
-            return _refusal(
+            return refusal(
                 answered.instruction or INSTRUCTIONS["upstream_failed"], answered.error_class
             )
         payload = answered.payload or {}
@@ -438,7 +466,7 @@ class PlatformTools:
         # The companion validated it against the wire, and the platform's own codec is the
         # one place a name like it is ever parsed.
         if "result" not in payload or not (urn is None or (isinstance(urn, str) and urn)):
-            return _refusal(INSTRUCTIONS["malformed_payload"], "malformed_payload")
+            return refusal(INSTRUCTIONS["malformed_payload"], "malformed_payload")
         if urn is not None:
             cited = self._citations.setdefault(request_id, [])
             if urn not in cited and len(cited) < MAX_CITATIONS:

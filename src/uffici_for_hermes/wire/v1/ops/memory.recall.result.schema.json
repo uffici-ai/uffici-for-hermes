@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/memory.recall.result.schema.json",
+  "title": "memory.recall result",
+  "description": "companion \u2192 plugin, the payload of the `result` answering a `memory.recall`. Each hit names its LEVEL, never a folder. `distance` is null when full text found it; `degraded` says full text stood in for some or all of the answer; `missing: [\"embeddings\"]` says the query could not be embedded. An empty `hits` with neither flag means nothing matched \u2014 never that memory was not looked at.",
+  "type": "object",
+  "required": [
+    "hits",
+    "degraded"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "hits": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": [
+          "urn",
+          "level",
+          "distance",
+          "text",
+          "at",
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "urn": {
+            "type": "string",
+            "pattern": "^urn:uffici:fact:[0-9a-fA-F-]{36}$"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "folder",
+              "organization"
+            ]
+          },
+          "distance": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "remembered",
+                  "member_written"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "embeddings"
+        ]
+      }
+    }
+  }
+}

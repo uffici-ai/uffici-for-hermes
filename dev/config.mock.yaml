@@ -37,6 +37,14 @@ display:
     uffici:
       long_running_notifications: false
 
+# Uffici memory in place of Hermes's own, as the setup manifest writes it
+# (`uffici-plugin.json`): the provider is the plugin's DIRECTORY name, and Hermes's
+# MEMORY.md and USER.md are off — for every platform this Hermes serves.
+memory:
+  provider: uffici-for-hermes
+  memory_enabled: false
+  user_profile_enabled: false
+
 # 🔴 `approvals` is left at Hermes's own default, deliberately (#2164). When Hermes asks a
 # person to approve a command, the plugin answers DENY at once with a reason the agent
 # relays: this platform has no approval channel until stage 3, and waiting on nobody

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/memory.recall.request.schema.json",
+  "title": "memory.recall request",
+  "description": "plugin \u2192 companion, the payload of a `call` with op `memory.recall`. Every level the conversation sits under \u2014 the organization, its folders, the conversation \u2014 searched for the query, the closest level winning a near-duplicate. `deadlineMs` is the plugin's whole budget: the companion and the platform each answer inside it, so a prefetch bound is never the one that fires. The companion refuses a request it did not ring (`not_permitted`).",
+  "type": "object",
+  "required": [
+    "requestId",
+    "query"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20
+    },
+    "deadlineMs": {
+      "type": "integer",
+      "minimum": 1500,
+      "maximum": 10000
+    }
+  }
+}

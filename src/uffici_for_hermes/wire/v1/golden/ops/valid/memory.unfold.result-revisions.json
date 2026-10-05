@@ -1,0 +1,17 @@
+{
+  "urn": "urn:uffici:fact:1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a",
+  "supersededBy": null,
+  "rows": [
+    {
+      "urn": "urn:uffici:fact:9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "level": "conversation",
+      "text": "The meeting is on Monday.",
+      "at": "2026-10-01T09:00:00.000Z",
+      "depth": 1,
+      "supersededKind": "revision",
+      "source": {
+        "kind": "remembered"
+      }
+    }
+  ]
+}

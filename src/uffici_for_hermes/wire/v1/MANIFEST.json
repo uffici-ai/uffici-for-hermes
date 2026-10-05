@@ -66,6 +66,38 @@
       ],
       "validGoldens": 3,
       "invalidGoldens": 2
+    },
+    "memory.recall": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 3,
+      "invalidGoldens": 2
+    },
+    "memory.remember": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 2,
+      "invalidGoldens": 1
+    },
+    "memory.forget": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 2,
+      "invalidGoldens": 1
+    },
+    "memory.unfold": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 3,
+      "invalidGoldens": 1
     }
   },
   "opsNote": "Call ops carry their own payload schemas under ops/ and goldens under golden/ops/ \u2014 not frames, so they sit outside `schemas` and `totals`. A new op adds its row here; the Go test asserts the files on disk match it exactly."

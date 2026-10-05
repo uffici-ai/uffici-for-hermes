@@ -354,3 +354,36 @@ def test_the_context_fails_off_the_system_side_or_on_the_user_side() -> None:
 
 def test_a_release_fixture_without_the_canary_has_nothing_to_prove() -> None:
     assert e2e.context_failures("", False) == []
+
+
+MEMORY_FIXTURE = '{"memory": {"unavailableIn": ["onboarding"]}, "text": "[remember-this]"}'
+
+
+def test_memory_passes_when_recalled_on_the_user_side_and_the_outage_was_told() -> None:
+    log = "\n".join(
+        [
+            _mock("memory_recalled=True memory_unavailable=False memory_system=False"),
+            _mock("memory_recalled=False memory_unavailable=True memory_system=False"),
+        ]
+    )
+    assert e2e.memory_failures(log, MEMORY_FIXTURE, "") == []
+
+
+def test_memory_fails_never_recalled_on_the_system_side_or_the_outage_unsaid() -> None:
+    never = _mock("memory_recalled=False memory_unavailable=True memory_system=False")
+    assert "never came back" in " ".join(e2e.memory_failures(never, MEMORY_FIXTURE, ""))
+    system = _mock("memory_recalled=True memory_unavailable=True memory_system=True")
+    assert "SYSTEM message" in " ".join(e2e.memory_failures(system, MEMORY_FIXTURE, ""))
+    unsaid = _mock("memory_recalled=True memory_unavailable=False memory_system=False")
+    assert "memory down" in " ".join(e2e.memory_failures(unsaid, MEMORY_FIXTURE, ""))
+
+
+def test_hermes_keeping_its_own_memory_fails_the_run() -> None:
+    log = _mock("memory_recalled=True memory_unavailable=True memory_system=False")
+    assert e2e.memory_failures(log, MEMORY_FIXTURE, "something.lock\n") == []
+    kept = " ".join(e2e.memory_failures(log, MEMORY_FIXTURE, "MEMORY.md\nUSER.md\n"))
+    assert "MEMORY.md, USER.md" in kept
+
+
+def test_a_release_fixture_without_memory_has_nothing_to_prove() -> None:
+    assert e2e.memory_failures("", "{}", "MEMORY.md") == []

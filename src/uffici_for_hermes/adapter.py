@@ -36,6 +36,7 @@ from .calls import CallClient
 from .context import render_context
 from .hint import PLATFORM_HINT
 from .log_shipping import LogFlusher, UfficiLogHandler, install, shared_handler
+from .memory import FEATURE_MEMORY, MemoryTools, publish, report_memory_drift, withdraw
 from .platform_tools import FEATURE_TOOLS, PlatformTools, on_post_tool_call
 from .render import cause_author, render_entries, render_reason
 from .wire_client import (
@@ -347,6 +348,18 @@ class UfficiAdapter(BasePlatformAdapter):
             request_for=self._open_request.get,
             enabled=lambda: FEATURE_TOOLS in self._companion_features,
         )
+        #: The agent's Uffici memory: the four tools, registered through the same plugin
+        #: context while the companion announces ``memory``, and the prefetch Hermes's
+        #: memory provider reaches through the process-global rendezvous.
+        self._memory = MemoryTools(
+            getattr(plugin_ctx, "register_tool", None),
+            call=self._calls.call,
+            request_for=self._open_request.get,
+            available=lambda: FEATURE_MEMORY in self._companion_features,
+            # Read from Hermes's prefetch thread: never CREATE the event there.
+            # One read: `disconnect` may reset it to None on the loop between two.
+            connected=lambda: (seen := self._hello_seen) is not None and seen.is_set(),
+        )
         #: The last conversation a brief named — what the catalog is asked for on `ready`.
         #: Kept across reconnects on purpose: the catalog is the agent's, and a reconnect is
         #: exactly when it may have moved.
@@ -423,6 +436,11 @@ class UfficiAdapter(BasePlatformAdapter):
         )
         self._runner = _spawn(self._client.run())
         self._tools.bind_loop(asyncio.get_running_loop())
+        self._memory.bind_loop(asyncio.get_running_loop())
+        publish(self._memory.prefetch)
+        # The setup's memory keys are Hermes-wide and anyone can change them: say so in the
+        # machine's log when they no longer hold.
+        report_memory_drift()
         if self._log_handler is not None:
             # 🔴 On the ROOT logger, never changing its level; the flusher pushes only
             # while no call is in flight.
@@ -443,6 +461,7 @@ class UfficiAdapter(BasePlatformAdapter):
             str(name) for name in (features or []) if isinstance(name, str)
         )
         self._hello_event().set()
+        self._memory.sync()
         runner, self._ready_runner = self._ready_runner, None
         if runner is not None:
             runner.cancel()
@@ -569,6 +588,7 @@ class UfficiAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         # What a companion can carry is that companion's: the next one says so again.
         self._companion_features = frozenset()
+        withdraw(self._memory.prefetch)
         self._hello_seen = None
         # 🔴 A question waiting on the card holds its Hermes turn (#2232 review): forgetting
         # it here without releasing it would leave that turn blocked, holding the session,

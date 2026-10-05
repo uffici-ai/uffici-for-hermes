@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/memory.remember.result.schema.json",
+  "title": "memory.remember result",
+  "description": "companion \u2192 plugin, the payload of the `result` answering a `memory.remember`: the remembered fact's URN.",
+  "type": "object",
+  "required": [
+    "urn"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "urn": {
+      "type": "string",
+      "pattern": "^urn:uffici:fact:[0-9a-fA-F-]{36}$"
+    }
+  }
+}

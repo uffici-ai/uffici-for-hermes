@@ -24,6 +24,14 @@ passed, so each is checked here against Hermes's own code:
   itself, offer the tool (directly or behind its tool-search bridge), dispatch the
   plugin's handler, bind the turn's chat id where the handler reads it, and remove a tool
   the plugin disposes.
+- **Uffici memory is Hermes's memory, and Hermes's own is off.** The plugin's directory
+  is the provider ``memory.provider`` names: Hermes's memory loader must find it there,
+  load it WITHOUT registering the platform a second time, and reach the adapter's prefetch
+  through the process-global rendezvous from its own copy of the package. The manifest's
+  keys must switch off MEMORY.md and USER.md (and with them the memory nudge). A prefetch
+  must land fenced on the user side before the call, unwrapped by the plugin, inside a
+  bound that is still the 8 s the plugin's deadline assumes, and its recall count must
+  become Hermes's status line (which the adapter never posts — pinned by its own suite).
 - **Hermes's own log lines reach a root handler.** The plugin ships them with one
   handler on the root logger: that works only while Hermes logs a turn through
   Python ``logging`` on a named logger that propagates, with the root at INFO or
@@ -44,6 +52,7 @@ from __future__ import annotations
 import inspect
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -403,6 +412,151 @@ def platform_tools_reach_the_model(factory, manifest: dict) -> str | None:
     return None
 
 
+#: Never a real fact: a marker the memory checks look for.
+MEMORY_CANARY = "uffici-memory-canary-5d1e"
+
+
+def memory_provider_is_the_plugin(factory, manifest: dict) -> str | None:
+    """Hermes's memory loader activates the plugin's directory as the provider, and the
+    provider copy reaches the gateway copy's adapter through the rendezvous."""
+    import threading
+
+    from agent.memory_provider import MemoryProvider
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import platform_registry
+    from gateway.session_context import set_session_vars
+    from plugins.memory import load_memory_provider
+
+    name = (configured(manifest).get("memory") or {}).get("provider")
+    adapter = factory(PlatformConfig(enabled=True))
+    package = sys.modules[type(adapter).__module__.rsplit(".", 1)[0]]
+    plugin_memory = sys.modules[f"{package.__name__}.memory"]
+    if name != plugin_memory.PROVIDER_DIRECTORY:
+        return f"the manifest selects memory provider {name!r}, not the plugin's directory"
+    before = platform_registry.get("uffici").adapter_factory
+    provider = load_memory_provider(name)
+    if not isinstance(provider, MemoryProvider) or provider.name != plugin_memory.PROVIDER_NAME:
+        return f"Hermes's memory loader did not activate the plugin as {name!r}"
+    if type(provider).__module__.split(".")[0] == package.__name__.split(".")[0]:
+        return "the provider was not loaded as Hermes's own copy; the rendezvous proves nothing"
+    if platform_registry.get("uffici").adapter_factory is not before:
+        return "loading the memory provider registered the uffici platform a second time"
+    if provider.get_tool_schemas() != [] or provider.system_prompt_block() != "":
+        return "the provider offers tools or a prompt block of its own"
+
+    from agent.memory_manager import MemoryManager
+
+    seen: dict[str, object] = {}
+
+    def bridge(conversation: str, query: str) -> tuple[str, int]:
+        seen["asked"] = (conversation, query)
+        return MEMORY_CANARY, 2
+
+    # 🔴 Through Hermes's OWN manager, from a turn's thread: the manager runs the prefetch
+    # on a thread of its own, so this is what proves the turn's session survives the hop
+    # (a provider called directly would prove only the probe's thread).
+    manager = MemoryManager()
+    manager.add_provider(provider)
+    plugin_memory.publish(bridge)
+    try:
+        def turn() -> None:
+            set_session_vars(platform="uffici", chat_id="probe-conversation")
+            seen["answer"] = manager.prefetch_all("what was decided?", session_id="probe")
+            seen["status"] = manager.describe_recall()
+
+        worker = threading.Thread(target=turn)
+        worker.start()
+        worker.join(timeout=30)
+    finally:
+        plugin_memory.withdraw(bridge)
+    if seen.get("asked") != ("probe-conversation", "what was decided?"):
+        return (
+            "a prefetch through Hermes's memory manager never reached the adapter for the "
+            "turn's conversation: the session is lost on its thread, or the rendezvous failed"
+        )
+    if MEMORY_CANARY not in str(seen.get("answer")):
+        return "Hermes's memory manager dropped the provider's recall"
+    if "Uffici" not in str(seen.get("status")) or "2" not in str(seen.get("status")):
+        return "the provider's recall count no longer becomes Hermes's status line"
+    return None
+
+
+def builtin_memory_is_off(manifest: dict) -> str | None:
+    """The manifest's keys switch off MEMORY.md and USER.md — and with no store, the memory
+    nudge has nothing to tick, so ``nudge_interval`` needs no key of its own."""
+    import agent.turn_context as turn_context
+    from tools.memory_tool import get_builtin_memory_store_flags
+
+    if get_builtin_memory_store_flags(configured(manifest)) != (False, False):
+        return "the manifest leaves Hermes's own MEMORY.md or USER.md on"
+    if get_builtin_memory_store_flags({}) != (True, True):
+        return "Hermes's built-in memory is no longer on by default; the check proves nothing"
+    if drifted := read_site(turn_context, "and agent._memory_store):"):
+        return drifted
+    agent = SimpleNamespace(
+        _memory_nudge_interval=1, valid_tool_names={"memory"}, _memory_store=None,
+        _turns_since_memory=5,
+    )
+    if turn_context._tick_memory_nudge(agent) is not False:  # noqa: SLF001
+        return "Hermes would nudge the agent toward a memory store that is off"
+    return None
+
+
+def prefetch_lands_fenced_on_the_user_side(factory) -> str | None:
+    """A prefetch rides the user message Hermes sends, inside its ``<memory-context>``
+    fence, never the system message — and the plugin's text needs no unwrapping."""
+    import agent.memory_manager as memory_manager
+    import agent.turn_context as turn_context
+    from gateway.config import PlatformConfig
+
+    adapter = factory(PlatformConfig(enabled=True))
+    package = type(adapter).__module__.rsplit(".", 1)[0]
+    plugin_memory = sys.modules[f"{package}.memory"]
+
+    if memory_manager._EXTERNAL_PREFETCH_TIMEOUT_S != plugin_memory.HERMES_PREFETCH_BOUND_SECONDS:  # noqa: SLF001
+        return (
+            f"Hermes bounds a prefetch at {memory_manager._EXTERNAL_PREFETCH_TIMEOUT_S}s, "  # noqa: SLF001
+            f"not the {plugin_memory.HERMES_PREFETCH_BOUND_SECONDS}s the plugin's deadline assumes"
+        )
+    # A real hit, from the wire's own golden — never a URN spelled here.
+    golden = (
+        Path(plugin_memory.__file__).parent / "wire" / "v1" / "golden" / "ops" / "valid"
+        / "memory.recall.result-levels.json"
+    )
+    hit = {**json.loads(golden.read_text())["hits"][0], "text": MEMORY_CANARY}
+    rendered, _count = plugin_memory.render_recall({"hits": [hit], "degraded": False})
+    if memory_manager.sanitize_context(rendered) != rendered:
+        return "Hermes strips something from the plugin's recall text: the plugin must not wrap it"
+    for line in (
+        "ext_prefetch_cache = agent._memory_manager.prefetch_all("
+        '_query, session_id=agent.session_id) or ""',
+        "agent._emit_status(_recall_indicator)",
+    ):
+        if drifted := read_site(turn_context, line):
+            return drifted
+    agent = SimpleNamespace(
+        ephemeral_system_prompt=None,
+        _current_turn_timestamp=0.0,
+        model="probe",
+        _copy_reasoning_content_for_api=lambda _msg, _api: None,
+        _should_sanitize_tool_calls=lambda: False,
+    )
+    messages = [{"role": "user", "content": "hello"}]
+    api_messages, _effective = turn_context.build_api_messages(
+        agent, messages, current_turn_user_idx=0, ext_prefetch_cache=rendered,
+        plugin_user_context=None, moa_config=None, active_system_prompt="the cached prompt",
+    )
+    users = [m for m in api_messages if m.get("role") == "user"]
+    systems = [m for m in api_messages if m.get("role") == "system"]
+    user_text = json.dumps(users)
+    if MEMORY_CANARY not in user_text or "<memory-context>" not in user_text:
+        return "a prefetch no longer reaches the user message, fenced, before the call"
+    if MEMORY_CANARY in json.dumps(systems):
+        return "a prefetch reached the system message"
+
+    return None
+
+
 def harness_logs_reach_a_root_handler(factory) -> str | None:
     """A turn's INFO line, from Hermes's own logger, reaches the plugin's root handler."""
     import logging
@@ -469,6 +623,9 @@ def main(argv: list[str]) -> int:
         ("harness logs", lambda: harness_logs_reach_a_root_handler(factory)),
         ("context slot", lambda: context_reaches_the_system_side_only(factory)),
         ("platform tools", lambda: platform_tools_reach_the_model(factory, manifest)),
+        ("memory provider", lambda: memory_provider_is_the_plugin(factory, manifest)),
+        ("built-in memory", lambda: builtin_memory_is_off(manifest)),
+        ("memory prefetch", lambda: prefetch_lands_fenced_on_the_user_side(factory)),
     ]
     for name, check in checks:
         failure = check()

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/memory.unfold.request.schema.json",
+  "title": "memory.unfold request",
+  "description": "plugin \u2192 companion, the payload of a `call` with op `memory.unfold`. What a fact (or a statement) superseded, up to two hops back.",
+  "type": "object",
+  "required": [
+    "requestId",
+    "urn"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "urn": {
+      "type": "string",
+      "pattern": "^urn:uffici:(fact|statement):"
+    },
+    "depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20
+    }
+  }
+}

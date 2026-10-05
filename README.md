@@ -30,6 +30,11 @@ Uffici conversation**, and what the session sends is the agent's answer.
    organization has allowed them — appear in Hermes as Hermes tools. When the agent uses one,
    the call goes through the companion to Uffici, on the turn it was made in, and its answer
    comes back to the agent.
+6. The agent's memory is your organization's Uffici memory, not Hermes's. Before each turn the
+   plugin recalls what was remembered where the conversation sits — the organization, its
+   folders, the conversation — and Hermes reads it ahead of the person's message. The agent
+   can look for more, remember a fact, mark one it remembered as no longer true, and see what
+   a fact replaced, all in Uffici, where people see, edit and delete what it keeps.
 
 ## Requirements
 
@@ -85,6 +90,9 @@ hermes plugins enable uffici-for-hermes
 hermes config set gateway.platforms.uffici.enabled true
 hermes config set display.platforms.uffici.long_running_notifications false
 hermes config set display.memory_notifications off
+hermes config set memory.provider uffici-for-hermes
+hermes config set memory.memory_enabled false
+hermes config set memory.user_profile_enabled false
 ```
 
 Then tell the plugin where the companion is. On a laptop or server, the companion's Unix
@@ -224,10 +232,39 @@ such a setting appears.
   search by default, so the agent finds a Uffici tool there rather than in its first list.
   The plugin writes no toolset setting: Hermes enables a plugin's toolset on its own, and
   `hermes tools` is where you can switch the `uffici` toolset off for a platform.
-- **Hermes's own tools and memory stay local.** What Hermes does with its local tools — its
-  terminal, its files, a web search — runs on this machine. The answer the agent posts names
-  which of those tools it used, never what it sent them or what they returned. Hermes's local
-  memory is not routed through Uffici.
+- **Hermes's own tools stay local.** What Hermes does with its local tools — its terminal,
+  its files, a web search — runs on this machine. The answer the agent posts names which of
+  those tools it used, never what it sent them or what they returned.
+
+### Memory
+
+The agent remembers in Uffici, where your organization can see, correct and delete what it
+keeps — never in files on this machine.
+
+- **Recall comes first, on every turn.** Before Hermes calls its model, the plugin asks Uffici
+  for what was remembered where the conversation sits, using the turn's own words, and Hermes
+  places it beside the person's message as recalled memory. Each line names its level — the
+  conversation, a folder, the organization — and the fact's URN; when two levels say the same
+  thing, the closest wins. It never holds a turn up for more than a few seconds. When memory cannot be reached — Uffici
+  is down, the companion is not connected, or the companion is older than this plugin — the
+  agent reads a sentence saying so and tells the person it could not check, rather than acting
+  as if nothing was remembered.
+- **Four tools, in the `uffici` toolset**, offered while the companion carries memory:
+  `uffici_recall` looks for something else than the turn's words; `uffici_remember` records
+  ONE fact about the work in this conversation — never an appraisal, rating or judgement of a
+  person; `uffici_forget` marks a fact the agent remembered in this conversation as no longer
+  true (it is never deleted, and facts from other levels or written by people cannot be
+  forgotten by the agent); `uffici_unfold` shows what a fact or a context statement replaced.
+  Outside a Uffici turn they do nothing and tell the agent why.
+- **People decide what lasts.** A remembered fact stays on its conversation until a person
+  promotes it to a folder or the organization, edits it, or deletes it, in the conversation's
+  Memory in the Uffici portal.
+- **Hermes's own memory is off — for this whole Hermes.** Setup selects the plugin as Hermes's
+  memory provider (`memory.provider`) and switches off Hermes's `MEMORY.md` and `USER.md`
+  (`memory.memory_enabled`, `memory.user_profile_enabled`). These are Hermes-wide settings,
+  not per platform: if this Hermes also serves another chat platform, its turns there recall
+  nothing and keep nothing. The plugin logs a warning at every connect when another provider
+  is selected or Hermes's own memory is back on; run setup again to restore them.
 
 ## What it is not
 

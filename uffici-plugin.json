@@ -11,7 +11,22 @@
   "config": [
     { "key": "gateway.platforms.uffici.enabled", "value": "true" },
     { "key": "display.platforms.uffici.long_running_notifications", "value": "false" },
-    { "key": "display.memory_notifications", "value": "off" }
+    { "key": "display.memory_notifications", "value": "off" },
+    {
+      "key": "memory.provider",
+      "value": "uffici-for-hermes",
+      "note": "Uffici memory is this Hermes's memory provider now, on every platform it serves: a turn that is not a Uffici conversation recalls nothing."
+    },
+    {
+      "key": "memory.memory_enabled",
+      "value": "false",
+      "note": "This Hermes's own MEMORY.md is off, on every platform it serves."
+    },
+    {
+      "key": "memory.user_profile_enabled",
+      "value": "false",
+      "note": "This Hermes's own USER.md is off, on every platform it serves."
+    }
   ],
   "envPath": ["hermes", "config", "env-path"],
   "envFile": ".env",

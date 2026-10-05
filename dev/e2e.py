@@ -137,6 +137,72 @@ def context_failures(mock_log: str, fixture_has_context: bool) -> list[str]:
     return failures
 
 
+#: Where a recall landed, as the mock prints it per completion — booleans, never text.
+MOCK_MEMORY_RECALLED = "memory_recalled=True"
+MOCK_MEMORY_UNAVAILABLE = "memory_unavailable=True"
+MOCK_MEMORY_SYSTEM = "memory_system=True"
+
+#: The marker a fixture's message carries to make the mock remember the canary's fact.
+MEMORY_MARKER = "[remember-this]"
+#: The fixture key that takes memory down in some of its conversations.
+MEMORY_OUTAGE = '"unavailableIn"'
+#: Hermes's own memory files — none may exist with the plugin installed.
+BUILTIN_MEMORY_FILES = ("MEMORY.md", "USER.md")
+
+#: Hermes's memories directory, through Hermes's OWN resolver, one name per line.
+LIST_BUILTIN_MEMORY = (
+    "import os\nfrom tools.memory_tool import get_memory_dir\nd = get_memory_dir()\n"
+    "print('\\n'.join(sorted(os.listdir(d))) if d.is_dir() else '')"
+)
+
+
+def memory_failures(mock_log: str, fixture_text: str, memory_files: str) -> list[str]:
+    """Why the agent's memory did not reach the model as it must; empty for a pass.
+
+    Judged only when the release's fixture DECLARES the memory scenario (its remember
+    marker). A fact one turn remembered must come back inside Hermes's ``<memory-context>``
+    on the USER side of a later turn and never on the system side; a conversation whose
+    memory the fixture takes down must tell the model so inside the same fence; and Hermes
+    must keep no notes of its own.
+    """
+    if MEMORY_MARKER not in fixture_text:
+        return []
+    failures = []
+    kept = [name for name in memory_files.splitlines() if name.strip() in BUILTIN_MEMORY_FILES]
+    if kept:
+        failures.append(
+            f"Hermes wrote its own memory ({', '.join(kept)}): its built-in memory is not off"
+        )
+    if MOCK_MEMORY_RECALLED not in mock_log:
+        failures.append(
+            "a remembered fact never came back inside <memory-context> before a model call"
+        )
+    if MOCK_MEMORY_SYSTEM in mock_log:
+        failures.append(
+            "the memory canary reached a model's SYSTEM message — recall belongs on the user side"
+        )
+    if MEMORY_OUTAGE in fixture_text and MOCK_MEMORY_UNAVAILABLE not in mock_log:
+        failures.append(
+            "a turn with the platform's memory down never told the model so inside "
+            "<memory-context>"
+        )
+    return failures
+
+
+def builtin_memory_files(container: str) -> str:
+    """Hermes's memories directory, listed inside the running gateway's container."""
+    listed = subprocess.run(
+        ["docker", "exec", "-u", "hermes", container, HERMES_PYTHON, "-c", LIST_BUILTIN_MEMORY],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=CONTRACT_TIMEOUT_S,
+    )
+    if listed.returncode != 0:
+        raise Failure("Hermes's memories directory could not be listed", listed.stderr)
+    return listed.stdout
+
+
 def restarts_owed(lines: list[dict], done: int) -> int:
     """How many harness restarts the companion has asked for that this run has not made."""
     return max(0, sum(1 for line in lines if line.get("msg") == RESTART_HARNESS) - done)
@@ -495,6 +561,7 @@ def run(version: str, fixture_dir: Path) -> None:
             + shipped_log_failures(lines, restarts)
             + harness_failures(container_logs(hermes), container_logs(mock))
             + context_failures(container_logs(mock), CONTEXT_CANARY in fixture_text)
+            + memory_failures(container_logs(mock), fixture_text, builtin_memory_files(hermes))
         )
         if failures:
             raise Failure("; ".join(failures), the_other_side())
