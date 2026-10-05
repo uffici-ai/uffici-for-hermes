@@ -34,6 +34,7 @@ from . import log_shipping
 from .budget import BudgetUnavailable, context_budget_tokens, resolve_share, resolve_window_tokens
 from .calls import CallClient
 from .context import render_context
+from .drift import read_drift
 from .hint import PLATFORM_HINT
 from .log_shipping import LogFlusher, UfficiLogHandler, install, shared_handler
 from .memory import FEATURE_MEMORY, MemoryTools, publish, report_memory_drift, withdraw
@@ -58,6 +59,10 @@ PLATFORM_NAME = "uffici"
 
 #: How long the window probe may take — Hermes's resolver may ask a provider (#2230).
 WINDOW_PROBE_TIMEOUT_SECONDS = 60.0
+
+#: How long reading the harness's drift may take (#2406). Past it the hello reports every
+#: kind unread — drift is a signal, and never holds a connection.
+DRIFT_READ_TIMEOUT_SECONDS = 10.0
 
 #: What a plugin that was not installed from a release says it is (#2236).
 DEV_VERSION = "0.0.0-dev"
@@ -277,6 +282,8 @@ class UfficiAdapter(BasePlatformAdapter):
         config.gateway_restart_notification = False
         self._get_env = get_env or env_reader()
         self._connect_fn = connect_fn
+        #: Reads the harness's drift for each hello (#2406); a seam for the tests.
+        self._drift_reader: Callable[[str], dict[str, list[str]]] = read_drift
         self._client: WireClient | None = None
         self._runner: Any = None
         self._ready_runner: Any = None
@@ -413,6 +420,7 @@ class UfficiAdapter(BasePlatformAdapter):
             harness_version=self._harness_version(),
             plugin_version=plugin_version(),
             budget_tokens=budget,
+            drift=self._read_drift,
             connect_fn=self._connect_fn or _default_connect,
             on_frame=self._on_frame,
             on_disconnected=self._calls.fail_all,
@@ -448,6 +456,21 @@ class UfficiAdapter(BasePlatformAdapter):
             self._log_flusher_obj = LogFlusher(self._log_handler, self._calls)
             self._log_flusher = _spawn(self._log_flusher_obj.run())
         return True
+
+    async def _read_drift(self) -> dict[str, list[str]]:
+        """The harness's drift for the hello (#2406), off the gateway's loop: reading
+        Hermes's gateway configuration may discover plugins. Never raises, never waits
+        past its bound — a timeout reports every kind unread, never clean."""
+        import asyncio
+
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._drift_reader, PLATFORM_NAME),
+                DRIFT_READ_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001 — drift never stops a connect
+            logger.info("uffici: harness drift not read (%s)", type(exc).__name__)
+            return {}
 
     async def _on_companion_hello(self, frame: dict[str, Any]) -> None:
         """The wire is up. Announce readiness once the harness can answer.

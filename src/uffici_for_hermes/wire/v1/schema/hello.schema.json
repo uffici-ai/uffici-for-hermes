@@ -71,6 +71,45 @@
           "maxLength": 64,
           "pattern": "^[A-Za-z0-9_-]+$",
           "description": "Optional. A nonce the plugin mints once per harness PROCESS and sends on every hello. The same id on a reconnect is the same process, still working on what it acknowledged; a different id is a restarted harness that holds nothing of the old one's turns, so the companion delivers what the old process had acknowledged again. Not a secret, and not an identity: a new one per process start. An older plugin that omits it keeps the old rule — acknowledged requests are never redelivered."
+        },
+        "drift": {
+          "type": "object",
+          "description": "Optional. What in the harness's own configuration reaches past Uffici, as the plugin read it at this hello — a client-reported signal (#1958 decision 27), shown by `uffici doctor` and NEVER a refusal: no value here closes a connection, holds a ring or fails a setup step. Each kind is the plugin's reading of one source; a kind the plugin could not read is ABSENT, an empty list means it read none. An older plugin omits the whole object, which the doctor reports as not reported. Names only — never a URL, a header, a path or a credential; the plugin clips each name to the bound and the list to its length rather than ever sending a frame the companion would refuse. An unknown kind is ignored.",
+          "properties": {
+            "mcpServers": {
+              "type": "array",
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "description": "The names of the MCP servers the harness has configured and enabled besides Uffici's own tools: tools whose calls never pass through the platform."
+            },
+            "channels": {
+              "type": "array",
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "description": "The harness's other live channels — platforms enabled and configured besides Uffici, on which this agent also answers outside the platform."
+            },
+            "localMemory": {
+              "type": "array",
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "description": "The harness's settings that keep a memory of its own beside Uffici's, by key (for Hermes: `memory.memory_enabled`, `memory.user_profile_enabled` still on, or `memory.provider` naming another provider)."
+            }
+          }
         }
       }
     },

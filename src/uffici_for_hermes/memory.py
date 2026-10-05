@@ -229,22 +229,44 @@ def _is_on(value: Any) -> bool:
     return str(value).strip().lower() not in _FALSE_WORDS
 
 
+#: The settings :func:`local_memory_keys` names, by their key in Hermes's configuration.
+PROVIDER_KEY = "memory.provider"
+BUILTIN_STORE_KEYS = ("memory.memory_enabled", "memory.user_profile_enabled")
+
+
+def local_memory_keys(config: Any) -> list[str]:
+    """The memory settings that keep this agent from Uffici's memory alone, by key — empty
+    when the setup's keys still hold. The ONE reading of them: the log's sentences
+    (:func:`memory_drift`) and the hello's ``drift.localMemory`` (``drift.py``) both use it.
+    """
+    memory = config.get("memory") if isinstance(config, dict) else None
+    memory = memory if isinstance(memory, dict) else {}
+    keys: list[str] = []
+    # Another provider is a memory of the harness's own; NO provider is not (Hermes then
+    # keeps none beyond its built-in stores, read below) — it only means Uffici's memory is
+    # not recalled, which `memory_drift` says in the log.
+    if str(memory.get("provider") or "").strip() not in ("", PROVIDER_DIRECTORY):
+        keys.append(PROVIDER_KEY)
+    keys += [key for key in BUILTIN_STORE_KEYS if _is_on(memory.get(key.split(".", 1)[1]))]
+    return keys
+
+
 def memory_drift(config: Any) -> list[str]:
     """What in Hermes's configuration keeps this agent from Uffici's memory, each as a
     sentence for the machine's log — empty when the setup's keys still hold."""
-    memory = config.get("memory") if isinstance(config, dict) else None
-    memory = memory if isinstance(memory, dict) else {}
+    keys = local_memory_keys(config)
     drift: list[str] = []
-    provider = str(memory.get("provider") or "").strip()
+    memory = config.get("memory") if isinstance(config, dict) else None
+    provider = str((memory if isinstance(memory, dict) else {}).get("provider") or "").strip()
     if provider != PROVIDER_DIRECTORY:
         drift.append(
             f"memory.provider is {provider or 'unset'}, not {PROVIDER_DIRECTORY}, so this "
             "agent's turns recall nothing from Uffici memory; run `uffici setup` again"
         )
-    on = [key for key in ("memory_enabled", "user_profile_enabled") if _is_on(memory.get(key))]
+    on = [key for key in keys if key in BUILTIN_STORE_KEYS]
     if on:
         drift.append(
-            f"Hermes's own memory is on ({', '.join('memory.' + k for k in on)}), so this "
+            f"Hermes's own memory is on ({', '.join(on)}), so this "
             "Hermes keeps notes of its own beside Uffici memory that no person in the "
             "organization can see or delete; run `uffici setup` again"
         )

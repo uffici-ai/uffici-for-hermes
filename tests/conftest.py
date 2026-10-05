@@ -739,3 +739,27 @@ def _forget_the_shared_log_handler():
     log_shipping.forget_shared_handler()
     yield
     log_shipping.forget_shared_handler()
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_drift_read: run the adapter's own threaded drift read (#2406)"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _drift_read_inline(request, monkeypatch):
+    """The adapter reads the harness's drift OFF the event loop before each hello (#2406);
+    a test about something else gets an empty report inline, so its hello is not paced by
+    a thread hop it never asked about. ``@pytest.mark.real_drift_read`` keeps the real one.
+
+    The import is local for the reason `_restore_adapter_timings` gives.
+    """
+    if request.node.get_closest_marker("real_drift_read") is None:
+        from uffici_for_hermes import adapter as adapter_module
+
+        async def inline(_self) -> dict:
+            return {}
+
+        monkeypatch.setattr(adapter_module.UfficiAdapter, "_read_drift", inline)
+    yield

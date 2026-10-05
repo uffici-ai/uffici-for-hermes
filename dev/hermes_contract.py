@@ -32,6 +32,10 @@ passed, so each is checked here against Hermes's own code:
   must land fenced on the user side before the call, unwrapped by the plugin, inside a
   bound that is still the 8 s the plugin's deadline assumes, and its recall count must
   become Hermes's status line (which the adapter never posts — pinned by its own suite).
+- **The hello's drift is Hermes's own reading of its configuration.** An MCP server
+  Hermes would start, a platform its gateway would connect besides Uffici, and Hermes's
+  own memory back on must each be reported, through Hermes's own readers — and the
+  configuration ``uffici setup`` writes must report none of them.
 - **Hermes's own log lines reach a root handler.** The plugin ships them with one
   handler on the root logger: that works only while Hermes logs a turn through
   Python ``logging`` on a named logger that propagates, with the root at INFO or
@@ -557,6 +561,82 @@ def prefetch_lands_fenced_on_the_user_side(factory) -> str | None:
     return None
 
 
+#: The issue's fixture (#2406): over what setup writes, an extra MCP server (and a disabled
+#: one, which is not drift), a second platform the gateway would connect, and Hermes's own
+#: memory switched back on. The bot token is a shape Hermes accepts, never a real one.
+DRIFT_FIXTURE = {
+    "mcp_servers": {
+        "probe-extra": {"url": "https://example.invalid/mcp"},
+        "probe-disabled": {"command": "true", "enabled": False},
+    },
+    "gateway": {
+        "platforms": {
+            "uffici": {"enabled": True},
+            "telegram": {
+                "enabled": True,
+                "token": "1234567890:AAEprobeprobeprobeprobeprobeprobe",  # gitleaks:allow
+            },
+        }
+    },
+}
+
+
+def drift_reads_hermes_own_config(factory, manifest: dict) -> str | None:
+    """The plugin's drift reader, pointed at a Hermes home holding the fixture, reports
+    each kind through Hermes's OWN readers — and the setup's configuration reports none."""
+    import copy
+    import importlib
+    import tempfile
+
+    import yaml
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.memory_tool import get_builtin_memory_store_flags
+
+    package = factory.__module__.rsplit(".", 1)[0]
+    drift = importlib.import_module(f"{package}.drift")
+    clean = configured(manifest)
+    clean.setdefault("gateway", {}).setdefault("platforms", {})["uffici"] = {"enabled": True}
+    drifted = copy.deepcopy(clean)
+    drifted.update(copy.deepcopy(DRIFT_FIXTURE))
+    drifted["memory"]["memory_enabled"] = True
+
+    def read(config: dict) -> dict:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+            Path(home, "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+            token = set_hermes_home_override(home)
+            try:
+                return drift.read_drift("uffici")
+            finally:
+                reset_hermes_home_override(token)
+
+    # 🔴 A platform Hermes enables from its ENVIRONMENT is a live channel too (the e2e
+    # rig's image connects `api_server` that way), and no config file can switch it off —
+    # so the clean read is the baseline, and the fixture must add exactly `telegram`.
+    baseline = read(clean)
+    if baseline.get("mcpServers") != [] or baseline.get("localMemory") != []:
+        return f"the setup's own configuration read as drift: {baseline!r}"
+    if "channels" not in baseline:
+        return "Hermes's gateway configuration could not be read, so no channel was"
+    if "telegram" in baseline["channels"]:
+        return f"the baseline already connects telegram, so the check proves nothing: {baseline!r}"
+    report = read(drifted)
+    want = {
+        "mcpServers": ["probe-extra"],
+        "channels": sorted([*baseline["channels"], "telegram"]),
+        "localMemory": ["memory.memory_enabled"],
+    }
+    if report != want:
+        return f"the fixture's drift read as {report!r}, not {want!r}"
+    # The memory kind is the plugin's transcription of Hermes's switch: held to Hermes's.
+    provider = importlib.import_module(f"{package}.memory").PROVIDER_DIRECTORY
+    for config in (clean, drifted, {"memory": {"provider": provider}}):
+        on = get_builtin_memory_store_flags(config)
+        keys = drift.local_memory_keys(config)
+        if on != tuple(key in keys for key in drift.BUILTIN_STORE_KEYS):
+            return f"Hermes reads its own memory as {on}, the plugin as {keys!r}"
+    return None
+
+
 def harness_logs_reach_a_root_handler(factory) -> str | None:
     """A turn's INFO line, from Hermes's own logger, reaches the plugin's root handler."""
     import logging
@@ -626,6 +706,7 @@ def main(argv: list[str]) -> int:
         ("memory provider", lambda: memory_provider_is_the_plugin(factory, manifest)),
         ("built-in memory", lambda: builtin_memory_is_off(manifest)),
         ("memory prefetch", lambda: prefetch_lands_fenced_on_the_user_side(factory)),
+        ("harness drift", lambda: drift_reads_hermes_own_config(factory, manifest)),
     ]
     for name, check in checks:
         failure = check()

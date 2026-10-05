@@ -22,7 +22,7 @@
     "call": 2,
     "cancel": 4,
     "done": 4,
-    "hello": 4,
+    "hello": 5,
     "opener": 1,
     "post": 2,
     "ready": 1,
@@ -30,7 +30,7 @@
     "result": 3
   },
   "invalidGoldensByCloseReason": {
-    "malformed_frame": 17,
+    "malformed_frame": 20,
     "unsupported_version": 2
   },
   "invalidGoldensByCallDisposition": {
@@ -39,8 +39,8 @@
   },
   "totals": {
     "schemas": 13,
-    "valid": 33,
-    "invalid": 21
+    "valid": 34,
+    "invalid": 24
   },
   "ops": {
     "logs.push": {

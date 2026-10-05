@@ -265,6 +265,11 @@ keeps — never in files on this machine.
   not per platform: if this Hermes also serves another chat platform, its turns there recall
   nothing and keep nothing. The plugin logs a warning at every connect when another provider
   is selected or Hermes's own memory is back on; run setup again to restore them.
+- **`uffici doctor` shows what reaches past Uffici.** At every connect the plugin tells the
+  companion, by name only, the other MCP servers this Hermes would start, the other platforms
+  its gateway connects, and the memory settings above that no longer hold — read through
+  Hermes's own configuration readers. The doctor prints them as `drift` lines. They are a
+  report, never a block: nothing about them stops a connection or a turn.
 
 ## What it is not
 
