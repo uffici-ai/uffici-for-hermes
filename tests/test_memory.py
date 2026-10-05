@@ -699,6 +699,8 @@ def test_a_loop_that_closed_before_the_hand_off_is_answered_not_raised() -> None
         answered = json.loads(run_on_loop(loop, lambda: coroutine, wait_seconds=1, tool="x"))
     finally:
         coroutine.close()
+        # Hand the loop its real answer back, or its finalizer closes it a second time.
+        del loop.is_closed
     assert answered["errorClass"] == "unknown_op"
 
 

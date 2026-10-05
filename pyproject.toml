@@ -54,6 +54,15 @@ pythonpath = ["src", "tests"]
 # lives in a CI step is a floor a laptop never meets, and `check:uffici` runs
 # this exact line.
 addopts = "--cov=uffici_for_hermes --cov-report=term-missing --cov-fail-under=90"
+# 🔴 An exception Python can only report as "ignored" (a finalizer, a callback on a
+# dead loop, a dying thread) is a defect in the test or the code, never noise: it
+# fails the run. It fails whichever test was running when the object was collected
+# or the thread died, which may not be the one that leaked it — read the traceback's
+# object, not the test's name, before calling it a flake.
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
 
 [tool.coverage.run]
 branch = true
