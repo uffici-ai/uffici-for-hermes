@@ -142,6 +142,33 @@ def context_failures(mock_log: str, fixture_has_context: bool) -> list[str]:
     return failures
 
 
+#: Where an opener's summary landed, as the mock prints it per completion — booleans,
+#: never text (#2451).
+MOCK_SUMMARY_CANARY = "summary_canary=True"
+MOCK_SUMMARY_SYSTEM = "summary_system=True"
+
+#: The canary the folded fixture's summary segment carries.
+SUMMARY_CANARY = "[summary-canary]"
+
+
+def summary_failures(mock_log: str, fixture_has_summary: bool) -> list[str]:
+    """Why the platform's summary did not reach the model as it must; empty for a pass.
+
+    Judged only when the release's fixture DECLARES a summary (its canary): a companion
+    released before the summary has nothing to prove here. A fresh session's opener
+    carries it, so it must reach a model on the USER side — where the opener lands — and
+    never on the system side.
+    """
+    if not fixture_has_summary:
+        return []
+    failures = []
+    if MOCK_SUMMARY_CANARY not in mock_log:
+        failures.append("the opener's summary never reached a model on the USER side")
+    if MOCK_SUMMARY_SYSTEM in mock_log:
+        failures.append("the opener's summary reached a model on the SYSTEM side — it must never")
+    return failures
+
+
 #: Where a recall landed, as the mock prints it per completion — booleans, never text.
 MOCK_MEMORY_RECALLED = "memory_recalled=True"
 MOCK_MEMORY_UNAVAILABLE = "memory_unavailable=True"
@@ -647,6 +674,7 @@ def run(version: str, fixture_dir: Path) -> None:
             ]
             + harness_failures(container_logs(hermes), container_logs(mock))
             + context_failures(container_logs(mock), CONTEXT_CANARY in fixture_text)
+            + summary_failures(container_logs(mock), SUMMARY_CANARY in fixture_text)
             + memory_failures(container_logs(mock), fixture_text, builtin_memory_files(hermes))
         )
         if failures:

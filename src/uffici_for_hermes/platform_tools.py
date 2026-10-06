@@ -67,9 +67,10 @@ RERUN_SCHEMA: dict[str, Any] = {
     "name": RERUN_TOOL,
     "description": (
         "Re-run a Uffici tool call you made before, from its tool_call URN — one you see in "
-        "a summary, a search result or a trace — to get its result fresh. The call runs "
-        "again now, as a new call, with the arguments it had; a call that needs approval "
-        "asks again."
+        "a summary, a search result or a trace — to see a read's result fresh. The call "
+        "runs again now, as a new call, with the arguments it had; a call that needs "
+        "approval asks again. A call that changed something is never re-run: to do it "
+        "again, call the tool yourself."
     ),
     "parameters": {
         "type": "object",

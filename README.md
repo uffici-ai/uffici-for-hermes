@@ -207,6 +207,12 @@ such a setting appears.
   history, on every turn — so an edit in Uffici applies to the agent's next answer. When part
   of it could not be included, the agent is told so and tells the person. With an older
   companion no context arrives, and Hermes runs on the plugin's fixed platform note alone.
+- **A long conversation opens with its summary.** When Hermes starts a fresh session for a
+  conversation that has grown long, Uffici sends a summary of the earlier messages ahead of
+  the recent ones. The plugin passes it on exactly as Uffici wrote it — a first line saying
+  what it covers and how the agent can read the messages behind it, then the summary — as
+  part of the conversation, never on Hermes's system side. The agent reads the earlier
+  messages themselves with its Uffici conversation tools.
 - **A question reaches the person as a question.** When the agent asks something (Hermes's
   `clarify`), the person sees it in Uffici as a card with the choices offered and a field for
   their own answer, and the agent picks up from their answer. With an older companion the

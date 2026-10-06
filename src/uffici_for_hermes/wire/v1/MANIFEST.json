@@ -23,7 +23,7 @@
     "cancel": 4,
     "done": 4,
     "hello": 6,
-    "opener": 1,
+    "opener": 2,
     "post": 2,
     "ready": 1,
     "release": 3,
@@ -39,7 +39,7 @@
   },
   "totals": {
     "schemas": 13,
-    "valid": 35,
+    "valid": 36,
     "invalid": 26
   },
   "ops": {

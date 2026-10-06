@@ -867,6 +867,8 @@ def test_the_rerun_tool_is_one_fixed_tool_in_the_uffici_toolset() -> None:
     assert parameters["required"] == ["call"] and parameters["additionalProperties"] is False
     description = pt.RERUN_SCHEMA["description"]
     assert "tool_call URN" in description and "a call that needs approval asks again" in description
+    # 🔴 A re-run is for reads (#2474): the platform refuses a call that changed something.
+    assert "A call that changed something is never re-run" in description
     # 🔴 `recall_tool_result` stays reserved: never registered by this plugin.
     assert "recall_tool_result" not in registry.tools
 

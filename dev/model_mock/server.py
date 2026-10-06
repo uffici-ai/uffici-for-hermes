@@ -114,6 +114,12 @@ CONTEXT_SEEN_MARKER = " [context-seen]"
 #: the system side. Matched by a fixed fragment of the platform's instruction.
 CONTEXT_MISSING_FRAGMENT = "context were unavailable because of a system problem"
 
+#: 🔴 The platform's summary of earlier messages must reach the model on the USER side,
+#: where a fresh session's opener lands (#2451; the folded fixture's segment carries this
+#: canary). Reported per request as a boolean, never as text: ``summary_canary`` (in any
+#: non-system message) and ``summary_system`` (in a system message — never).
+SUMMARY_CANARY = os.environ.get("MODEL_MOCK_SUMMARY_CANARY", "[summary-canary]")
+
 MODEL_ID = os.environ.get("MODEL_MOCK_MODEL", "mock-model")
 
 #: The largest request body this will read into memory.
@@ -570,6 +576,9 @@ class Handler(BaseHTTPRequestHandler):
         memory_recalled = any(MEMORY_CANARY in block for block in recalled_blocks)
         memory_unavailable = any(MEMORY_UNAVAILABLE_FRAGMENT in b for b in recalled_blocks)
         memory_system = bool(MEMORY_CANARY) and MEMORY_CANARY in system_text
+        # 🔴 Where an opener's summary landed (#2451): the USER side, never the system.
+        summary_canary = bool(SUMMARY_CANARY) and SUMMARY_CANARY in other_text
+        summary_system = bool(SUMMARY_CANARY) and SUMMARY_CANARY in system_text
         if system_canary and text:
             text += CONTEXT_SEEN_MARKER
 
@@ -587,6 +596,7 @@ class Handler(BaseHTTPRequestHandler):
             f"remembers={remembers} remembered={remembered is not None} "
             f"memory_recalled={memory_recalled} memory_unavailable={memory_unavailable} "
             f"memory_system={memory_system} "
+            f"summary_canary={summary_canary} summary_system={summary_system} "
             f"rerun={reruns} rerun_result={reran is not None} "
             f"roles={','.join(str(m.get('role')) for m in (payload.get('messages') or [])[-4:])}",
             flush=True,

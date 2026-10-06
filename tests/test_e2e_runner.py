@@ -427,6 +427,27 @@ def test_a_release_fixture_without_the_canary_has_nothing_to_prove() -> None:
     assert e2e.context_failures("", False) == []
 
 
+def test_the_summary_passes_on_the_user_side() -> None:
+    log = "\n".join(
+        [
+            _mock("summary_canary=False summary_system=False"),
+            _mock("summary_canary=True summary_system=False"),
+        ]
+    )
+    assert e2e.summary_failures(log, True) == []
+
+
+def test_the_summary_fails_off_the_user_side_or_on_the_system_side() -> None:
+    never = _mock("summary_canary=False summary_system=False")
+    assert "never reached" in " ".join(e2e.summary_failures(never, True))
+    system = _mock("summary_canary=True summary_system=True")
+    assert "SYSTEM side" in " ".join(e2e.summary_failures(system, True))
+
+
+def test_a_release_fixture_without_a_summary_has_nothing_to_prove() -> None:
+    assert e2e.summary_failures("", False) == []
+
+
 MEMORY_FIXTURE = '{"memory": {"unavailableIn": ["onboarding"]}, "text": "[remember-this]"}'
 
 

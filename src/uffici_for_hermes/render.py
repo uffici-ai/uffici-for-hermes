@@ -80,14 +80,22 @@ def render_entry(entry: dict[str, Any]) -> list[str]:
         # what an agent did; re-labelling it with an author would attribute the
         # tool's output to the person who triggered it.
         lines = [text] if text else []
+    elif kind == "summary":
+        # 🔴 Verbatim, every line, no label and no tag (#2451). A summary is the
+        # platform's own text standing for earlier messages, and its header line
+        # already says what it covers and how to read them (`read_conversation`
+        # with the segment it names) — so the plugin parses nothing in it. A label
+        # would attribute the platform's words to an author; a `[summary]` tag
+        # would repeat what the header says.
+        lines = text.split("\n") if text else []
     elif kind == "tombstone":
         lines = [f"{_label_for(author)}: {TOMBSTONE_LINE}"]
     elif kind == "message" or not kind:
         lines = [f"{_label_for(author)}: {text}"]
     else:
         # 🔴 An unknown kind is LABELLED, never dropped and never fatal
-        # (decision 44). Wave 4's summary kind must arrive with no version bump,
-        # and a reader that refused it would make that arrival a breaking change.
+        # (decision 44). A new kind must arrive with no version bump — `summary`
+        # did — and a reader that refused one would make it a breaking change.
         lines = [f"{_label_for(author)} [{kind}]: {text}"]
 
     return [*lines, *_attachment_lines(entry)]

@@ -108,3 +108,29 @@ def test_a_reply_says_the_context_was_seen_only_when_it_was_on_the_system_side(
     assert seen.endswith(" [context-seen]")
     unseen = _ask([{"role": "system", "content": "x"}, {"role": "user", "content": f"{CANARY}"}])
     assert "[context-seen]" not in unseen
+
+
+#: The canary the folded fixture's summary segment carries (#2451).
+SUMMARY = "[summary-canary]"
+
+
+def test_reports_a_summary_on_the_user_side_and_never_its_text(mock_log: Path) -> None:
+    """🔴 #2451: the opener's summary must reach the model on the USER side, where the
+    opener lands — reported as a boolean, never the text."""
+    _ask(
+        [
+            {"role": "system", "content": "x"},
+            {"role": "user", "content": f"Summary of 37 earlier messages.\nThe invoice. {SUMMARY}"},
+        ]
+    )
+    line = _lines(mock_log)[-1]
+    assert "summary_canary=True" in line
+    assert "summary_system=False" in line
+    assert SUMMARY not in line and "The invoice" not in line
+
+
+def test_reports_a_summary_placed_on_the_system_side(mock_log: Path) -> None:
+    _ask([{"role": "system", "content": f"{SUMMARY} folded"}, {"role": "user", "content": "hi"}])
+    line = _lines(mock_log)[-1]
+    assert "summary_canary=False" in line
+    assert "summary_system=True" in line

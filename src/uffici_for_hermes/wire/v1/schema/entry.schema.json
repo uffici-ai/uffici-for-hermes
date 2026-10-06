@@ -37,11 +37,12 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 64,
-      "description": "KNOWN values: message, tool_line, tombstone. 🔴 Deliberately NOT an enum. Forward compatibility is a requirement of this wire: a reader that meets a kind it does not know renders the entry as a labelled line rather than failing, and wave 4's summary kind must arrive with no version bump. Closing this enum would make that arrival a breaking change.",
+      "description": "KNOWN values: message, tool_line, tombstone, summary. A summary is the platform's own text standing for earlier messages (a header line saying what it covers and how to read them, then the summary), or one sentence saying earlier messages are not shown; it arrives on an opener, authored by the platform. 🔴 Deliberately NOT an enum. Forward compatibility is a requirement of this wire: a reader that meets a kind it does not know renders the entry as a labelled line rather than failing, which is how the summary kind arrived with no version bump. Closing this enum would make the next new kind a breaking change.",
       "examples": [
         "message",
         "tool_line",
-        "tombstone"
+        "tombstone",
+        "summary"
       ]
     },
     "text": {
