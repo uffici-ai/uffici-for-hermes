@@ -230,6 +230,11 @@ such a setting appears.
   so to the agent, and the first call asks that person in the conversation. Outside a Uffici
   turn — from another chat platform this Hermes serves, or a scheduled job — a Uffici tool
   does nothing and tells the agent why.
+- **A call can be run again.** While the companion carries it, the plugin also offers one tool
+  of its own in the `uffici` toolset, `uffici_rerun`: given a call's `tool_call` URN — one the
+  agent sees in a summary, a search result or a trace — Uffici runs that call again, now, as a
+  new call with the arguments it had, and a call that needs approval asks again. A call whose
+  arguments were not kept cannot be re-run, and the agent is told so.
 - **Hermes's tool search applies to them too.** Hermes keeps plugin tools behind its own tool
   search by default, so the agent finds a Uffici tool there rather than in its first list.
   The plugin writes no toolset setting: Hermes enables a plugin's toolset on its own, and

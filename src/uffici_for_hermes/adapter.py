@@ -39,7 +39,7 @@ from .drift import read_drift
 from .hint import PLATFORM_HINT
 from .log_shipping import LogFlusher, UfficiLogHandler, install, shared_handler
 from .memory import FEATURE_MEMORY, MemoryTools, publish, report_memory_drift, withdraw
-from .platform_tools import FEATURE_TOOLS, PlatformTools, on_post_tool_call
+from .platform_tools import FEATURE_TOOLS, FEATURE_TOOLS_RERUN, PlatformTools, on_post_tool_call
 from .render import cause_author, render_entries, render_reason
 from .support import SUPPORTED_RANGE, harness_support
 from .wire_client import (
@@ -359,6 +359,8 @@ class UfficiAdapter(BasePlatformAdapter):
             call=self._calls.call,
             request_for=self._open_request.get,
             enabled=lambda: FEATURE_TOOLS in self._companion_features,
+            # 🔴 `uffici_rerun` only beside `tools` (#2454): a re-run is a tool call.
+            rerun_enabled=lambda: {FEATURE_TOOLS, FEATURE_TOOLS_RERUN} <= self._companion_features,
         )
         #: The agent's Uffici memory: the four tools, registered through the same plugin
         #: context while the companion announces ``memory``, and the prefetch Hermes's
@@ -502,6 +504,7 @@ class UfficiAdapter(BasePlatformAdapter):
         )
         self._hello_event().set()
         self._memory.sync()
+        self._tools.sync_rerun()
         runner, self._ready_runner = self._ready_runner, None
         if runner is not None:
             runner.cancel()

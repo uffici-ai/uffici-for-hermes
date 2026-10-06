@@ -97,7 +97,40 @@ def test_a_script_without_the_expectation_is_judged_as_before() -> None:
 def test_the_run_reads_the_expectation_from_the_releases_own_script() -> None:
     source = RUNNER.read_text()
     assert "expects_tool_call=expects_tool_call" in source
-    assert "fixture_expects_tool_call(json.loads(fixture_text))" in source
+    assert "fixture_expects_tool_call(fixture_script)" in source
+    assert "fixture_script = json.loads(fixture_text)" in source
+
+
+# ------------------------------------------------------------- the re-run tally (#2454)
+
+RERUN_SCRIPT = {"steps": [{"step": "ring"}, {"step": "expectToolRerun"}]}
+
+
+def test_a_script_expects_a_rerun_only_when_it_says_so() -> None:
+    assert e2e.fixture_expects_tool_rerun(RERUN_SCRIPT) is True
+    for script in (TOOL_SCRIPT, {}, {"steps": None}, [], {"steps": ["x"]}):
+        assert e2e.fixture_expects_tool_rerun(script) is False
+
+
+def test_a_script_that_expects_a_rerun_passes_on_a_counted_one() -> None:
+    lines = _log({**VERDICT, "toolCalls": 2, "toolReruns": 1})
+    assert e2e.verdict_failures(lines, 0, expects_tool_rerun=True) == []
+
+
+@pytest.mark.parametrize("reruns", [0, None, True, "1"])
+def test_a_script_that_expects_a_rerun_fails_without_one(reruns) -> None:
+    """🔴 A tool call is not a re-run: `toolCalls` never stands in for `toolReruns`."""
+    verdict = {**VERDICT, "toolCalls": 2}
+    if reruns is not None:
+        verdict["toolReruns"] = reruns
+    failures = e2e.verdict_failures(_log(verdict), 0, expects_tool_rerun=True)
+    assert len(failures) == 1 and "no re-run of a recorded call" in failures[0]
+
+
+def test_the_run_reads_the_rerun_expectation_from_the_releases_own_script() -> None:
+    source = RUNNER.read_text()
+    assert "expects_tool_rerun=expects_tool_rerun" in source
+    assert "fixture_expects_tool_rerun(fixture_script)" in source
 
 
 def test_log_lines_drops_what_is_not_a_json_object() -> None:

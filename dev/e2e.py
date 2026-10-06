@@ -270,8 +270,28 @@ def fixture_expects_tool_call(fixture: object) -> bool:
     )
 
 
+#: The fixture step that expects a re-run of a recorded call (#2454).
+EXPECT_TOOL_RERUN = "expectToolRerun"
+
+
+def fixture_expects_tool_rerun(fixture: object) -> bool:
+    """Whether the release's script expects a re-run of a recorded tool call at all.
+
+    Judged only when the script asks, like the tool tally: a companion released before
+    re-runs existed has nothing to prove here.
+    """
+    steps = fixture.get("steps") if isinstance(fixture, dict) else None
+    return any(
+        isinstance(step, dict) and step.get("step") == EXPECT_TOOL_RERUN for step in steps or []
+    )
+
+
 def verdict_failures(
-    lines: list[dict], exit_code: int, *, expects_tool_call: bool = False
+    lines: list[dict],
+    exit_code: int,
+    *,
+    expects_tool_call: bool = False,
+    expects_tool_rerun: bool = False,
 ) -> list[str]:
     """Every reason the finished run is not a pass; empty only for a real pass.
 
@@ -307,6 +327,14 @@ def verdict_failures(
             failures.append(
                 f"the script expects a tool call and the companion counted {shown} — no"
                 " Uffici tool reached the platform"
+            )
+    if expects_tool_rerun:
+        reruns = verdict.get("toolReruns")
+        if not _is_count(reruns) or reruns < 1:
+            shown = reruns if reruns is not None else "no"
+            failures.append(
+                f"the script expects a tool re-run and the companion counted {shown} — no"
+                " re-run of a recorded call reached the platform"
             )
     if exit_code != 0:
         unmet = verdict.get("unmet", "some")
@@ -601,9 +629,16 @@ def run(version: str, fixture_dir: Path) -> None:
         # The companion's log is complete once it has exited.
         lines = log_lines(container_logs(companion))
         fixture_text = (fixture_dir / "ci" / "wave1.json").read_text()
-        expects_tool_call = fixture_expects_tool_call(json.loads(fixture_text))
+        fixture_script = json.loads(fixture_text)
+        expects_tool_call = fixture_expects_tool_call(fixture_script)
+        expects_tool_rerun = fixture_expects_tool_rerun(fixture_script)
         failures = (
-            verdict_failures(lines, exit_code, expects_tool_call=expects_tool_call)
+            verdict_failures(
+                lines,
+                exit_code,
+                expects_tool_call=expects_tool_call,
+                expects_tool_rerun=expects_tool_rerun,
+            )
             + shipped_log_failures(lines, restarts)
             + [
                 f"the companion asked to end the session of {conversation}, "

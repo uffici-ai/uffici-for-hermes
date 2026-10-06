@@ -67,6 +67,14 @@
       "validGoldens": 3,
       "invalidGoldens": 2
     },
+    "tools.rerun": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 3,
+      "invalidGoldens": 1
+    },
     "memory.recall": {
       "schemas": [
         "request",

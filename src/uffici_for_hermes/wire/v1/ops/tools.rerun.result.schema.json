@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/tools.rerun.result.schema.json",
+  "title": "tools.rerun result",
+  "description": "companion \u2192 plugin, the payload of the `result` answering a `tools.rerun` \u2014 the `tools.call` result's shape. `result` is the tool's answer as the platform returned it; a call whose arguments were not kept answers the actionable refusal `rerun_unavailable` (`ok: false`, a sentence the model reads). `callUrn` names the NEW call when it ran.",
+  "type": "object",
+  "required": [
+    "callUrn",
+    "result"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "callUrn": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^urn:uffici:tool_call:[1-9][0-9]{0,17}$"
+    },
+    "result": {}
+  }
+}

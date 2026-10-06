@@ -81,6 +81,17 @@ MEMORY_CALL_ID = "call_mock_remember"
 MEMORY_CANARY = os.environ.get("MODEL_MOCK_MEMORY_CANARY", "[memory-canary]")
 MEMORY_FACT = f"Invoices for the Lisbon client go out on the 10th. {MEMORY_CANARY}"
 
+#: 🔴 A marker a script puts in ONE message to make that turn RE-RUN A UFFICI TOOL CALL
+#: (#2454): the model calls ``uffici_rerun`` — offered directly, or behind Hermes's tool
+#: search — naming the LATEST ``tool_call`` URN any tool message in the request carries (an
+#: earlier turn's ``list_boards`` result does), and answers from the re-run's result.
+RERUN_MARKER = os.environ.get("MODEL_MOCK_RERUN_MARKER", "[rerun-a-tool]")
+RERUN_TOOL = "uffici_rerun"
+RERUN_CALL_ID = "call_mock_rerun"
+#: The key a Uffici tool's result names its call by — read from the result, never matched
+#: by the URN's own spelling (one codec, on the platform: no second spelling here).
+CALL_URN_KEY = "callUrn"
+
 #: The sentence a turn's recall carries when the platform's memory is down — matched by a
 #: fixed fragment of the platform's instruction, inside the same fence.
 MEMORY_UNAVAILABLE_FRAGMENT = "Memory was unavailable because of a system problem"
@@ -228,6 +239,43 @@ def _uffici_tool_result(payload: dict, call_id: str = TOOL_CALL_ID) -> str | Non
     if last is None or last.get("tool_call_id") != call_id:
         return None
     return _tool_text(last.get("content"))
+
+
+def _latest_call_urn(payload: dict) -> str | None:
+    """The newest ``tool_call`` URN any tool message in this request carries, or None."""
+    latest = None
+    for message in payload.get("messages") or []:
+        if isinstance(message, dict) and message.get("role") == "tool":
+            found = _call_urns(_tool_text(message.get("content")))
+            if found:
+                latest = found[-1]
+    return latest
+
+
+def _call_urns(text: str) -> list[str]:
+    """Every non-empty ``callUrn`` a tool result carries, in order — the result as JSON,
+    searched through nested objects, lists and JSON-encoded strings (a bridged call's
+    result arrives wrapped)."""
+    found: list[str] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, dict):
+            urn = value.get(CALL_URN_KEY)
+            if isinstance(urn, str) and urn:
+                found.append(urn)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+        elif isinstance(value, str) and value[:1] in "{[":
+            try:
+                walk(json.loads(value))
+            except ValueError:
+                return
+
+    walk(text)
+    return found
 
 
 def _fenced(text: str) -> list[str]:
@@ -481,6 +529,25 @@ class Handler(BaseHTTPRequestHandler):
         )
         if remembered is not None:
             text = f"{REPLY_PREFIX}remembered: {remembered[:200]}"
+        # A re-run (#2454): the marked turn re-runs the latest call it can see, and the turn
+        # it resumes quotes the re-run's result — derived from it, like the tool marker's.
+        reran = _uffici_tool_result(payload, RERUN_CALL_ID)
+        rerun_route = _tool_route(payload, RERUN_TOOL)
+        rerun_urn = _latest_call_urn(payload)
+        reruns = (
+            answered is None
+            and tool_result is None
+            and remembered is None
+            and reran is None
+            and not uses_tool
+            and not remembers
+            and bool(RERUN_MARKER)
+            and RERUN_MARKER in asked
+            and rerun_route is not None
+            and rerun_urn is not None
+        )
+        if reran is not None:
+            text = f"{REPLY_PREFIX}rerun: {reran[:500]}"
 
         # 🔴 One line per request, and it carries NO transcript content — counts,
         # booleans, lengths, and the ROLES of the last four messages (the shape of
@@ -520,6 +587,7 @@ class Handler(BaseHTTPRequestHandler):
             f"remembers={remembers} remembered={remembered is not None} "
             f"memory_recalled={memory_recalled} memory_unavailable={memory_unavailable} "
             f"memory_system={memory_system} "
+            f"rerun={reruns} rerun_result={reran is not None} "
             f"roles={','.join(str(m.get('role')) for m in (payload.get('messages') or [])[-4:])}",
             flush=True,
         )
@@ -529,6 +597,8 @@ class Handler(BaseHTTPRequestHandler):
             else _tool_call(route) if uses_tool
             else _tool_call(memory_route, MEMORY_TOOL, MEMORY_CALL_ID, {"text": MEMORY_FACT})
             if remembers
+            else _tool_call(rerun_route, RERUN_TOOL, RERUN_CALL_ID, {"call": rerun_urn})
+            if reruns
             else None
         )
         if call is not None:

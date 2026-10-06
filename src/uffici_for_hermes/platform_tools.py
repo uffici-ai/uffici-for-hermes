@@ -54,6 +54,36 @@ logger = logging.getLogger(__name__)
 #: carry citations and activity", in its hello.
 FEATURE_TOOLS = "tools"
 
+#: The companion's word for "the plugin may call tools.rerun" (#2454), announced only
+#: beside ``tools``.
+FEATURE_TOOLS_RERUN = "rerun"
+
+#: 🔴 The ONE fixed tool this module registers beside the catalog (#2454): re-run a
+#: recorded call from its ``tool_call`` URN. Fixed, because it is the plugin's, not the
+#: agent's catalog; ``recall_tool_result`` stays reserved and is never registered.
+RERUN_TOOL = "uffici_rerun"
+RERUN_OP = "tools.rerun"
+RERUN_SCHEMA: dict[str, Any] = {
+    "name": RERUN_TOOL,
+    "description": (
+        "Re-run a Uffici tool call you made before, from its tool_call URN — one you see in "
+        "a summary, a search result or a trace — to get its result fresh. The call runs "
+        "again now, as a new call, with the arguments it had; a call that needs approval "
+        "asks again."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "call": {
+                "type": "string",
+                "description": "The call's tool_call URN, exactly as you saw it.",
+            }
+        },
+        "required": ["call"],
+        "additionalProperties": False,
+    },
+}
+
 #: The Hermes toolset the catalog is registered in — the platform's own name, so Hermes's
 #: implicit ``hermes-uffici`` bundle carries it (see the module docstring).
 TOOLSET = "uffici"
@@ -252,6 +282,7 @@ class PlatformTools:
         call: Callable[..., Awaitable[CallResult]],
         request_for: Callable[[str], str | None],
         enabled: Callable[[], bool],
+        rerun_enabled: Callable[[], bool] = lambda: False,
         session_reader: Callable[[], str | None] = session_conversation,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -259,6 +290,9 @@ class PlatformTools:
         self._call = call
         self._request_for = request_for
         self._enabled = enabled
+        self._rerun_enabled = rerun_enabled
+        #: The re-run tool's Hermes registration, while the companion carries it.
+        self._rerun_handle: Any = None
         self._session_reader = session_reader
         self._clock = clock
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -285,6 +319,66 @@ class PlatformTools:
 
     def enabled(self) -> bool:
         return self._register_tool is not None and bool(self._enabled())
+
+    @property
+    def rerun_offered(self) -> bool:
+        """Whether ``uffici_rerun`` is registered with Hermes right now."""
+        return self._rerun_handle is not None
+
+    def sync_rerun(self) -> None:
+        """Offer ``uffici_rerun`` while the companion carries ``rerun``; withdraw it when
+        not (#2454). Called on every companion hello, like the memory tools' sync."""
+        if self._register_tool is None:
+            return
+        if self._rerun_enabled():
+            if self._rerun_handle is not None:
+                return
+            try:
+                handle = self._register_tool(
+                    name=RERUN_TOOL,
+                    toolset=TOOLSET,
+                    schema=RERUN_SCHEMA,
+                    handler=self._rerun_handler(),
+                    description=RERUN_SCHEMA["description"],
+                    emoji="🏢",
+                )
+            except Exception as exc:  # noqa: BLE001 — a refused tool never fails the hello
+                logger.warning(
+                    "uffici: Hermes refused the tool %s (%s)",
+                    RERUN_TOOL,
+                    type(exc).__name__,
+                    extra={"tool": RERUN_TOOL},
+                )
+                return
+            if handle is None:
+                logger.warning(
+                    "uffici: the tool %s was not offered — Hermes already has a tool of that name",
+                    RERUN_TOOL,
+                    extra={"tool": RERUN_TOOL},
+                )
+                return
+            self._rerun_handle = handle
+            logger.info("uffici: offering %s to Hermes", RERUN_TOOL, extra={"tool": RERUN_TOOL})
+            return
+        handle, self._rerun_handle = self._rerun_handle, None
+        if handle is None:
+            return
+        dispose = getattr(handle, "dispose", None)
+        if callable(dispose):
+            try:
+                dispose()
+            except Exception as exc:  # noqa: BLE001 — the handler refuses once withdrawn
+                logger.warning(
+                    "uffici: Hermes would not remove the tool %s (%s)",
+                    RERUN_TOOL,
+                    type(exc).__name__,
+                    extra={"tool": RERUN_TOOL},
+                )
+        logger.info(
+            "uffici: the companion carries no re-run; %s was withdrawn",
+            RERUN_TOOL,
+            extra={"tool": RERUN_TOOL},
+        )
 
     # ---------------------------------------------------------------- refresh
 
@@ -480,12 +574,75 @@ class PlatformTools:
         )
         return json.dumps({"callUrn": urn, "result": payload["result"]}, ensure_ascii=False)
 
+    def _rerun_handler(self) -> Callable[[dict[str, Any]], str]:
+        def handle(args: dict[str, Any]) -> str:
+            # 🔴 Read HERE, in the calling thread: the turn's session is its ContextVars.
+            conversation_id = self._session_reader()
+            return run_on_loop(
+                self._loop,
+                lambda: self.rerun(conversation_id, args),
+                wait_seconds=CALL_DEADLINE_MS / 1000 + THREAD_GRACE_SECONDS,
+                tool=RERUN_TOOL,
+            )
+
+        handle.__name__ = f"uffici_tool_{RERUN_TOOL}"
+        return handle
+
+    async def rerun(self, conversation_id: str | None, args: Any) -> str:
+        """One re-run of a recorded call on the request open on ``conversation_id`` (#2454).
+
+        🔴 A re-run IS a tool call: never retried, answered in ``tools.call``'s shape, and
+        the new call it made cited like one. A call whose arguments were not kept is the
+        platform's RESULT (``rerun_unavailable``), handed to the model as it came.
+        """
+        request_id = self._request_for(conversation_id) if conversation_id else None
+        if not request_id:
+            logger.warning(
+                "uffici: the tool %s was called outside a Uffici request; refused",
+                RERUN_TOOL,
+                extra={"tool": RERUN_TOOL},
+            )
+            return refusal(OUTSIDE_A_REQUEST)
+        if not (self._enabled() and self._rerun_enabled()):
+            return refusal(INSTRUCTIONS["unknown_op"], "unknown_op")
+        call = args.get("call") if isinstance(args, dict) else None
+        if not isinstance(call, str) or not call.strip():
+            return refusal(INSTRUCTIONS["malformed_payload"], "malformed_payload")
+        answered = await self._call(
+            RERUN_OP, {"requestId": request_id, "call": call.strip()}, deadline_ms=CALL_DEADLINE_MS
+        )
+        if not answered.ok:
+            logger.warning(
+                "uffici: a re-run failed on request %s (%s)",
+                request_id,
+                answered.error_class,
+                extra={"requestId": request_id, "class": answered.error_class},
+            )
+            return refusal(
+                answered.instruction or INSTRUCTIONS["upstream_failed"], answered.error_class
+            )
+        payload = answered.payload or {}
+        urn = payload.get("callUrn")
+        if "result" not in payload or not (urn is None or (isinstance(urn, str) and urn)):
+            return refusal(INSTRUCTIONS["malformed_payload"], "malformed_payload")
+        if urn is not None:
+            cited = self._citations.setdefault(request_id, [])
+            if urn not in cited and len(cited) < MAX_CITATIONS:
+                cited.append(urn)
+        logger.info(
+            "uffici: a re-run ran on request %s (%s)",
+            request_id,
+            "cited" if urn else "not run",
+            extra={"tool": RERUN_TOOL, "requestId": request_id},
+        )
+        return json.dumps({"callUrn": urn, "result": payload["result"]}, ensure_ascii=False)
+
     # ------------------------------------------------------------------ the post
 
     def on_tool_called(self, tool_name: str, status: str | None) -> None:
         """Hermes's post-tool hook, in the agent's thread: one of HERMES'S tools ran."""
         name = str(tool_name or "")
-        if not name or name in self._catalog or name in BRIDGE_TOOL_NAMES:
+        if not name or name in self._catalog or name == RERUN_TOOL or name in BRIDGE_TOOL_NAMES:
             return
         conversation_id = self._session_reader()
         loop = self._loop
