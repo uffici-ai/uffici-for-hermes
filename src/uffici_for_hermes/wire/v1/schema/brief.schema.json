@@ -95,6 +95,30 @@
     "context": {
       "$ref": "context.schema.json",
       "description": "OPTIONAL — absent from an older companion. When present, the plugin places it on the system side of EVERY turn, fresh or resumed, so an edit lands on the next answer."
+    },
+    "contextChanged": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "OPTIONAL — absent when nothing changed and from an older companion. The context levels a person changed since the agent last answered in this conversation; the plugin tells the model on the USER side of the turn, beside the reason, so it follows the current context and never blames itself for earlier messages the change contradicts.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "scope"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "scope": {
+            "type": "string",
+            "pattern": "^[a-z][a-z_]{0,31}$"
+          }
+        }
+      }
     }
   }
 }

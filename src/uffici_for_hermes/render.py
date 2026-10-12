@@ -152,6 +152,39 @@ def render_reason(
     return f"[Uffici] You were woken because: {said}."
 
 
+#: The most levels a change line names — the wire's bound (``brief.contextChanged``).
+CONTEXT_CHANGES_MAX = 16
+
+
+def render_context_changed(changed: Any) -> str | None:
+    """The line saying the context changed since the agent last answered here.
+
+    A person edited what the agent is told in the middle of the conversation, so
+    the agent's earlier messages may contradict the context it reads now. Said on
+    the USER side, beside the reason — never in the system-side context, which
+    stays exactly what the platform composed — so the model follows the current
+    context and does not take the blame for an answer that was right when given.
+    ``None`` when nothing changed, the key is absent (an older companion) or
+    nothing in it is readable: then the turn says nothing.
+    """
+    if not isinstance(changed, list):
+        return None
+    names: list[str] = []
+    for level in changed[:CONTEXT_CHANGES_MAX]:
+        if not isinstance(level, dict):
+            continue
+        name = " ".join(str(level.get("name") or "").split())[:128]
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        return None
+    return (
+        f"[Uffici] The context changed since your last answer: {', '.join(names)}. "
+        "Follow the current context; where your earlier messages disagree with it, "
+        "the context changed — they were not mistakes."
+    )
+
+
 def cause_author(cause: dict[str, Any] | None, entries: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """The author of the entry that caused this turn.
 

@@ -12,6 +12,7 @@ import pytest
 from uffici_for_hermes.render import (
     TOMBSTONE_LINE,
     cause_author,
+    render_context_changed,
     render_entries,
     render_entry,
     render_reason,
@@ -245,3 +246,19 @@ def test_the_sender_is_the_causes_author_not_the_last_human() -> None:
 def test_a_cause_outside_the_delta_still_yields_its_author_id() -> None:
     author = cause_author({"entryId": "gone", "authorId": "m9"}, [])
     assert author["id"] == "m9"
+
+
+def test_a_changed_context_names_each_level_once_and_says_the_earlier_answers_were_right() -> None:
+    line = render_context_changed(golden("brief-context-changed")["contextChanged"])
+    assert line is not None
+    assert line.startswith("[Uffici] The context changed since your last answer: Clients.")
+    assert "not mistakes" in line
+    flattened = render_context_changed(
+        [{"name": "Dev\n  ops", "scope": "folder"}, {"name": "Dev ops", "scope": "folder"}]
+    )
+    assert flattened is not None and ": Dev ops." in flattened
+
+
+@pytest.mark.parametrize("changed", [None, [], "Clients", [{}], [{"name": "  "}]])
+def test_nothing_changed_or_nothing_readable_says_nothing(changed: object) -> None:
+    assert render_context_changed(changed) is None

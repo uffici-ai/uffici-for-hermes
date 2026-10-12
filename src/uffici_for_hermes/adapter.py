@@ -40,7 +40,7 @@ from .hint import PLATFORM_HINT
 from .log_shipping import LogFlusher, UfficiLogHandler, install, shared_handler
 from .memory import FEATURE_MEMORY, MemoryTools, publish, report_memory_drift, withdraw
 from .platform_tools import FEATURE_TOOLS, FEATURE_TOOLS_RERUN, PlatformTools, on_post_tool_call
-from .render import cause_author, render_entries, render_reason
+from .render import cause_author, render_context_changed, render_entries, render_reason
 from .support import SUPPORTED_RANGE, harness_support
 from .wire_client import (
     WireClient,
@@ -1253,8 +1253,17 @@ class UfficiAdapter(BasePlatformAdapter):
             # system-side one and is reserved for what is stable across a
             # session (decision 43); a per-turn line there would rewrite the
             # system prompt every turn and cost the provider's cache each time.
-            channel_context=render_reason(
-                str(frame.get("reason") or ""), frame.get("cause"), delta
+            # The levels a person changed since the agent's last answer here
+            # (2026-10-12) ride the same user-side slot, one line after the
+            # reason: the system side is untouched, so nothing new reaches
+            # Hermes's prompt cache beyond the edit itself.
+            channel_context="\n".join(
+                line
+                for line in (
+                    render_reason(str(frame.get("reason") or ""), frame.get("cause"), delta),
+                    render_context_changed(frame.get("contextChanged")),
+                )
+                if line
             ),
             # 🔴 The platform's context goes in the SYSTEM-side slot, on EVERY
             # brief — fresh or resumed — so an edit lands on the next answer.

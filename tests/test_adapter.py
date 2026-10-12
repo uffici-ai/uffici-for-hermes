@@ -387,6 +387,32 @@ def test_the_context_lands_system_side_and_never_user_side() -> None:
     run(scenario())
 
 
+def test_a_changed_context_is_said_user_side_and_leaves_the_system_side_alone() -> None:
+    """2026-10-12: a person edited the context since the agent last answered. The
+    turn says so on the USER side, after the reason, naming the level — and the
+    system-side context is byte for byte what it is without the change, so nothing
+    new reaches Hermes's prompt or its cache beyond the edit itself."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        await adapter._on_frame(golden("brief-with-context"))
+        await adapter._on_frame({**golden("brief-context-changed"), "requestId": "req_2"})
+        plain, changed = adapter.handled[0], adapter.handled[1]
+
+        assert changed.channel_prompt == plain.channel_prompt, "the change touched the system side"
+        lines = (changed.channel_context or "").split("\n")
+        reason = next(
+            i for i, line in enumerate(lines) if line.startswith("[Uffici] You were woken because:")
+        )
+        assert lines[reason + 1].startswith(
+            "[Uffici] The context changed since your last answer: Clients."
+        ), "the change line does not follow the reason"
+        assert "context changed" not in (plain.channel_context or "")
+        assert "Clients" not in changed.text, "the change line reached the transcript text"
+
+    run(scenario())
+
+
 def test_a_resumed_brief_carries_the_context_too() -> None:
     """Every brief, not only a fresh one: an edit to the context lands on the very
     next answer, without waiting for a new session."""
