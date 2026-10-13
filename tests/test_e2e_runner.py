@@ -479,3 +479,56 @@ def test_hermes_keeping_its_own_memory_fails_the_run() -> None:
 
 def test_a_release_fixture_without_memory_has_nothing_to_prove() -> None:
     assert e2e.memory_failures("", "{}", "MEMORY.md") == []
+
+
+FILES_FIXTURE = '{"data": "[pdf-canary]", "steps": [{"step": "interruptNextUpload"}]}'
+FILES_MOCK = _mock(
+    "pdf_media=True image_media=True media_written=True upload_call=True upload_result=False"
+)
+FILES_VERDICT = {
+    **VERDICT,
+    "downloads": 2,
+    "uploads": 2,
+    "uploadsResumed": 1,
+    "attachmentsPosted": 1,
+}
+
+
+def test_the_files_pass_when_both_use_cases_ran_and_the_upload_resumed() -> None:
+    assert e2e.file_failures(FILES_MOCK, FILES_FIXTURE, _log(FILES_VERDICT)) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("downloads", 1), ("uploads", 1), ("uploadsResumed", 0), ("attachmentsPosted", None)],
+)
+def test_the_files_fail_on_a_count_under_its_floor(field: str, value: object) -> None:
+    verdict = {**FILES_VERDICT, field: value}
+    if value is None:
+        del verdict[field]
+    failed = " ".join(e2e.file_failures(FILES_MOCK, FILES_FIXTURE, _log(verdict)))
+    assert f"{field}=" in failed
+
+
+def test_a_resume_is_owed_only_when_the_fixture_interrupts_an_upload() -> None:
+    verdict = {**FILES_VERDICT, "uploadsResumed": 0}
+    assert e2e.file_failures(FILES_MOCK, '{"data": "[pdf-canary]"}', _log(verdict)) == []
+
+
+@pytest.mark.parametrize(
+    ("flag", "reason"),
+    [
+        ("pdf_media", "PDF"),
+        ("image_media", "image"),
+        ("media_written", "made a file"),
+        ("upload_call", "save a file"),
+    ],
+)
+def test_the_files_fail_when_the_model_did_not_see_or_make_them(flag: str, reason: str) -> None:
+    log = FILES_MOCK.replace(f"{flag}=True", f"{flag}=False")
+    assert reason in " ".join(e2e.file_failures(log, FILES_FIXTURE, _log(FILES_VERDICT)))
+
+
+def test_a_release_fixture_without_files_has_nothing_to_prove() -> None:
+    assert e2e.file_failures("", "{}", []) == []
+    assert "uploads=none" in " ".join(e2e.file_failures(FILES_MOCK, FILES_FIXTURE, []))

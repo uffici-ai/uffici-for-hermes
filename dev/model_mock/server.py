@@ -12,9 +12,12 @@ into a container whose whole point is that it is already complete.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import json
 import os
+import re
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -120,6 +123,41 @@ CONTEXT_MISSING_FRAGMENT = "context were unavailable because of a system problem
 #: non-system message) and ``summary_system`` (in a system message — never).
 SUMMARY_CANARY = os.environ.get("MODEL_MOCK_SUMMARY_CANARY", "[summary-canary]")
 
+#: 🔴 Files (#2679). A person's PDF and PNG must reach the model as MEDIA — the PNG as an
+#: image part Hermes inlined, the PDF as a document Hermes names by its local path — and
+#: each canary lives only in the file's BYTES, never in a message's text, so a reply that
+#: names it proves the file arrived. Reported per request as booleans: ``pdf_media`` (a
+#: document path in the last user message whose file carries the canary) and
+#: ``image_media`` (an image part in it whose bytes do). The reply then names each.
+PDF_CANARY = os.environ.get("MODEL_MOCK_PDF_CANARY", "[pdf-canary]")
+PNG_CANARY = os.environ.get("MODEL_MOCK_PNG_CANARY", "[png-canary]")
+
+#: The workspace the companion and Hermes share (the rig mounts it at the same path in
+#: all three containers). Empty: the mock makes no file, and a marked turn says so.
+WORKSPACE = os.environ.get("MODEL_MOCK_WORKSPACE", "").strip()
+
+#: 🔴 A marker a script puts in ONE message to make that turn MAKE A FILE (#2679): the mock
+#: writes the report INSIDE the workspace (the plugin uploads nothing from outside it) and
+#: answers Hermes's own ``MEDIA:<path>`` tag, which Hermes delivers through the adapter's
+#: ``send_document`` — the plugin uploads it and the reply carries it.
+MAKE_MARKER = os.environ.get("MODEL_MOCK_MAKE_MARKER", "[make-a-file]")
+
+#: 🔴 A marker a script puts in ONE message to make that turn SAVE A FILE INTO FILES (#2679):
+#: the model calls ``uffici_upload`` with ``to``, and the turn it resumes says it saved.
+SAVE_MARKER = os.environ.get("MODEL_MOCK_SAVE_MARKER", "[save-a-file]")
+UPLOAD_TOOL = "uffici_upload"
+UPLOAD_CALL_ID = "call_mock_upload"
+SAVE_TO = "reports/q3-report.pdf"
+
+#: The report the mock makes, relative to the workspace, and the canary its bytes carry.
+REPORT_PATH = "out/q3-report.pdf"
+REPORT_CANARY = "[report-canary]"
+#: Large enough that the fixture's interrupted upload (64 KiB in) drops mid-file.
+REPORT_BYTES = 256 * 1024
+
+#: A document path Hermes names in a user message (``It is saved at: <path>.``).
+_PDF_PATH = re.compile(r"(/[^\s'\"]+?\.pdf)\b")
+
 MODEL_ID = os.environ.get("MODEL_MOCK_MODEL", "mock-model")
 
 #: The largest request body this will read into memory.
@@ -162,6 +200,66 @@ def _role_text(payload: dict, system: bool) -> str:
 def _last_user_message(payload: dict) -> str:
     texts = _user_messages(payload)
     return texts[-1] if texts else ""
+
+
+def _last_user_content(payload: dict) -> list:
+    """The last user message's content parts (a string becomes one text part)."""
+    for message in reversed(payload.get("messages") or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
+        return [part for part in content or [] if isinstance(part, dict)]
+    return []
+
+
+def _image_media(payload: dict) -> bool:
+    """Whether the last user message carries an image part whose bytes hold the canary."""
+    for part in _last_user_content(payload):
+        if part.get("type") != "image_url":
+            continue
+        url = str((part.get("image_url") or {}).get("url") or "")
+        if not url.startswith("data:") or "," not in url:
+            continue
+        try:
+            raw = base64.b64decode(url.split(",", 1)[1], validate=False)
+        except (binascii.Error, ValueError):
+            continue
+        if PNG_CANARY.encode() in raw:
+            return True
+    return False
+
+
+def _pdf_media(text: str) -> bool:
+    """Whether a document path in ``text`` names a file whose bytes hold the canary.
+
+    The file is read from the shared workspace — the same path Hermes gave the model —
+    bounded, and never printed."""
+    for path in _PDF_PATH.findall(text):
+        try:
+            with open(path, "rb") as handle:
+                if PDF_CANARY.encode() in handle.read(4 << 20):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _write_report() -> str | None:
+    """Write the report inside the workspace, deterministically, and answer its path."""
+    if not WORKSPACE:
+        return None
+    path = os.path.join(WORKSPACE, REPORT_PATH)
+    head = f"%PDF-1.4\n% Q3 report {REPORT_CANARY}\n".encode()
+    body = head + b"%" + b"q" * (REPORT_BYTES - len(head) - 1)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(body)
+    except OSError:
+        return None
+    return path
 
 
 def _asked_before(payload: dict) -> bool:
@@ -302,7 +400,7 @@ def _clarify_result(payload: dict) -> str | None:
     answer, as text.
     """
     last = _last_tool_message(payload)
-    if last is None or last.get("tool_call_id") in (TOOL_CALL_ID, MEMORY_CALL_ID):
+    if last is None or last.get("tool_call_id") in (TOOL_CALL_ID, MEMORY_CALL_ID, UPLOAD_CALL_ID):
         # Not a clarify answer: no tool spoke last, or it was a marked turn's own tool.
         return None
     content = last.get("content")
@@ -391,10 +489,16 @@ class Handler(BaseHTTPRequestHandler):
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):
             for payload in (
                 _chunk("", None),
-                {**_chunk("", None), "choices": [
-                    {"index": 0, "delta": {"tool_calls": [{"index": 0, **call}]},
-                     "finish_reason": None},
-                ]},
+                {
+                    **_chunk("", None),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"tool_calls": [{"index": 0, **call}]},
+                            "finish_reason": None,
+                        },
+                    ],
+                },
                 _chunk("", "tool_calls"),
             ):
                 self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
@@ -555,6 +659,57 @@ class Handler(BaseHTTPRequestHandler):
         if reran is not None:
             text = f"{REPLY_PREFIX}rerun: {reran[:500]}"
 
+        # Files (#2679): what reached the model as media, a file made, a file saved.
+        image_media = _image_media(payload)
+        pdf_media = _pdf_media(asked)
+        if text and (image_media or pdf_media):
+            # 🔴 The canaries only, never the usual echo: the message names the files' local
+            # paths, and Hermes delivers any local file path a reply names — an echo sent
+            # the person's own PDF back to them as an attachment.
+            text = (
+                REPLY_PREFIX
+                + "I read what you sent:"
+                + "".join(
+                    f" {canary}"
+                    for canary, seen in ((PDF_CANARY, pdf_media), (PNG_CANARY, image_media))
+                    if seen
+                )
+            )
+        upload_result = _uffici_tool_result(payload, UPLOAD_CALL_ID)
+        upload_route = _tool_route(payload, UPLOAD_TOOL)
+        media_written = False
+        makes = (
+            answered is None
+            and upload_result is None
+            and bool(MAKE_MARKER)
+            and MAKE_MARKER in asked
+        )
+        if makes:
+            made = _write_report()
+            media_written = made is not None
+            text = (
+                f"{REPLY_PREFIX}here is the Q3 report.\nMEDIA:{made}"
+                if made
+                else f"{REPLY_PREFIX}there is no workspace to make the report in"
+            )
+        saves = (
+            answered is None
+            and upload_result is None
+            and not makes
+            and bool(SAVE_MARKER)
+            and SAVE_MARKER in asked
+            and upload_route is not None
+        )
+        if saves:
+            saves = _write_report() is not None
+            media_written = saves
+        if upload_result is not None:
+            text = (
+                f"{REPLY_PREFIX}saved: {upload_result[:300]}"
+                if "savedAt" in upload_result
+                else f"{REPLY_PREFIX}the upload failed: {upload_result[:300]}"
+            )
+
         # 🔴 One line per request, and it carries NO transcript content — counts,
         # booleans, lengths, and the ROLES of the last four messages (the shape of
         # the call: a tool-less aux call on the first message alone read, in #2272's
@@ -598,31 +753,47 @@ class Handler(BaseHTTPRequestHandler):
             f"memory_system={memory_system} "
             f"summary_canary={summary_canary} summary_system={summary_system} "
             f"rerun={reruns} rerun_result={reran is not None} "
+            f"pdf_media={pdf_media} image_media={image_media} media_written={media_written} "
+            f"upload_call={saves} upload_result={upload_result is not None} "
             f"roles={','.join(str(m.get('role')) for m in (payload.get('messages') or [])[-4:])}",
             flush=True,
         )
 
         call = (
-            _clarify_call() if asks
-            else _tool_call(route) if uses_tool
+            _clarify_call()
+            if asks
+            else _tool_call(route)
+            if uses_tool
             else _tool_call(memory_route, MEMORY_TOOL, MEMORY_CALL_ID, {"text": MEMORY_FACT})
             if remembers
             else _tool_call(rerun_route, RERUN_TOOL, RERUN_CALL_ID, {"call": rerun_urn})
             if reruns
+            else _tool_call(
+                upload_route,
+                UPLOAD_TOOL,
+                UPLOAD_CALL_ID,
+                {"local_path": REPORT_PATH, "to": SAVE_TO},
+            )
+            if saves
             else None
         )
         if call is not None:
             if wants_stream:
                 self._stream_tool_call(call)
                 return
-            self._reply(200, {
-                **_completion(""),
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": None, "tool_calls": [call]},
-                    "finish_reason": "tool_calls",
-                }],
-            })
+            self._reply(
+                200,
+                {
+                    **_completion(""),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": None, "tool_calls": [call]},
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                },
+            )
             return
         if wants_stream:
             self._stream(text)

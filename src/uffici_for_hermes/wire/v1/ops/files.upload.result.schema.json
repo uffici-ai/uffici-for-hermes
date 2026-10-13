@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/files.upload.result.schema.json",
+  "title": "files.upload result",
+  "description": "companion → plugin, the payload of the `result` answering a `files.upload`: the attachment the next `post` of the request carries (`ref`, `id`, `name`), or the Files `path` the file was saved at — and its size in bytes.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "ref",
+        "id",
+        "name",
+        "size"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "path",
+        "size"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1025
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  ]
+}

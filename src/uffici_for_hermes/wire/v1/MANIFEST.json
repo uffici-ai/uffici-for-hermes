@@ -18,19 +18,19 @@
   ],
   "validGoldensByFrame": {
     "ack": 4,
-    "brief": 6,
+    "brief": 7,
     "call": 2,
     "cancel": 4,
     "done": 4,
-    "hello": 6,
+    "hello": 8,
     "opener": 2,
-    "post": 2,
+    "post": 3,
     "ready": 1,
     "release": 3,
     "result": 3
   },
   "invalidGoldensByCloseReason": {
-    "malformed_frame": 22,
+    "malformed_frame": 24,
     "unsupported_version": 2
   },
   "invalidGoldensByCallDisposition": {
@@ -39,8 +39,8 @@
   },
   "totals": {
     "schemas": 13,
-    "valid": 37,
-    "invalid": 26
+    "valid": 41,
+    "invalid": 28
   },
   "ops": {
     "logs.push": {
@@ -106,6 +106,22 @@
       ],
       "validGoldens": 3,
       "invalidGoldens": 1
+    },
+    "files.download": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 3,
+      "invalidGoldens": 2
+    },
+    "files.upload": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 4,
+      "invalidGoldens": 2
     }
   },
   "opsNote": "Call ops carry their own payload schemas under ops/ and goldens under golden/ops/ \u2014 not frames, so they sit outside `schemas` and `totals`. A new op adds its row here; the Go test asserts the files on disk match it exactly."

@@ -126,6 +126,8 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
 
 class MessageType(Enum):
     TEXT = "text"
+    PHOTO = "photo"
+    DOCUMENT = "document"
     COMMAND = "command"
 
 
@@ -143,6 +145,11 @@ class MessageEvent:
     user_name: Optional[str] = None
     source: Any = None
     message_id: Optional[str] = None
+    # Media attachments: local file paths (for vision tool access)
+    media_urls: list[str] = field(default_factory=list)
+    media_types: list[str] = field(default_factory=list)
+    # Per-attachment text-inlining contract; None = legacy "text/* already inlined into ``text``".
+    media_text_inlined: list[Optional[bool]] = field(default_factory=list)
     channel_prompt: Optional[str] = None
     channel_context: Optional[str] = None
     internal: bool = False
@@ -247,6 +254,42 @@ class BasePlatformAdapter(ABC):
         else:
             text = f"❓ {question}"
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
+
+    # The media hooks (base.py, v2026.9.24, :3131 / :3163): each default is the "friendly
+    # failure notice" — ``_media_failure_text`` sent through ``emit_warning``, which is a plain
+    # ``send`` while Hermes's warning notices are on (the stand-in keeps them on).
+    async def _send_media_fallback_notice(
+        self, kind: str, chat_id: str, metadata: Optional[dict[str, Any]],
+        file_name: Optional[str] = None,
+    ) -> SendResult:
+        suffix = f" ({file_name})" if file_name else ""
+        return await self.send(
+            chat_id=chat_id, content=f"⚠️ Couldn't deliver the {kind} attachment{suffix}.",
+            metadata=metadata,
+        )
+
+    async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
+                            file_name: Optional[str] = None, reply_to: Optional[str] = None,
+                            metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+        return await self._send_media_fallback_notice("file", chat_id, metadata, file_name)
+
+    async def send_image_file(
+        self, chat_id: str, image_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs,
+    ) -> SendResult:
+        return await self._send_media_fallback_notice("image", chat_id, metadata)
+
+    async def send_video(
+        self, chat_id: str, video_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs,
+    ) -> SendResult:
+        return await self._send_media_fallback_notice("video", chat_id, metadata)
+
+    async def send_voice(
+        self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs,
+    ) -> SendResult:
+        return await self._send_media_fallback_notice("audio", chat_id, metadata)
 
     async def handle_message(self, event: MessageEvent) -> bool:
         """The stand-in records and admits. Tests that need a refusal replace it."""

@@ -215,9 +215,60 @@ def memory_failures(mock_log: str, fixture_text: str, memory_files: str) -> list
         )
     if MEMORY_OUTAGE in fixture_text and MOCK_MEMORY_UNAVAILABLE not in mock_log:
         failures.append(
-            "a turn with the platform's memory down never told the model so inside "
-            "<memory-context>"
+            "a turn with the platform's memory down never told the model so inside <memory-context>"
         )
+    return failures
+
+
+#: The files (#2679), as the mock prints them per completion — booleans, never text: a
+#: person's PDF and PNG reached the model as media, the mock made a file in the shared
+#: workspace, and it asked to save one into Files.
+MOCK_PDF_MEDIA = "pdf_media=True"
+MOCK_IMAGE_MEDIA = "image_media=True"
+MOCK_MEDIA_WRITTEN = "media_written=True"
+MOCK_UPLOAD_CALL = "upload_call=True"
+
+#: The canary the files conversation's PDF carries — the scenario's declaration.
+PDF_CANARY = "[pdf-canary]"
+#: The fixture step that drops an upload's connection once.
+INTERRUPT_UPLOAD = '"interruptNextUpload"'
+
+#: The companion's verdict fields for the files, and the floor each must reach.
+FILE_VERDICT_FLOORS = {"downloads": 2, "uploads": 2, "attachmentsPosted": 1}
+FILE_VERDICT_RESUMED = "uploadsResumed"
+
+
+def file_failures(mock_log: str, fixture_text: str, lines: list[dict]) -> list[str]:
+    """Why the two file use cases did not run end to end; empty for a pass.
+
+    Judged only when the release's fixture DECLARES them (the PDF's canary): a companion
+    released before the files has nothing to prove here. The verdict must count both
+    prefetched attachments, an attached and a saved upload, one attachment on a post and —
+    when the fixture interrupts one — a resumed upload; the mock must have seen both files
+    as media, made a file and asked to save one.
+    """
+    if PDF_CANARY not in fixture_text:
+        return []
+    verdict = next((line for line in lines if line.get("msg") == SCRIPT_COMPLETE), {})
+    floors = dict(FILE_VERDICT_FLOORS)
+    if INTERRUPT_UPLOAD in fixture_text:
+        floors[FILE_VERDICT_RESUMED] = 1
+    failures = []
+    for field, floor in floors.items():
+        value = verdict.get(field)
+        if not _is_count(value) or value < floor:
+            shown = value if value is not None else "none"
+            failures.append(
+                f"the companion counted {field}={shown}, the files scenario needs at least {floor}"
+            )
+    for literal, reason in (
+        (MOCK_PDF_MEDIA, "the person's PDF never reached a model as a document it could open"),
+        (MOCK_IMAGE_MEDIA, "the person's image never reached a model as an image part"),
+        (MOCK_MEDIA_WRITTEN, "the model never made a file in the shared workspace"),
+        (MOCK_UPLOAD_CALL, "the model never asked to save a file into Files"),
+    ):
+        if literal not in mock_log:
+            failures.append(reason)
     return failures
 
 
@@ -244,9 +295,7 @@ def session_ends_owed(lines: list[dict], done: int) -> list[str]:
     """The conversations whose Hermes session the companion asked this run to end, and that
     it has not ended yet, in the order asked."""
     asked = [
-        str(line.get("conversation") or "")
-        for line in lines
-        if line.get("msg") == END_SESSION_LINE
+        str(line.get("conversation") or "") for line in lines if line.get("msg") == END_SESSION_LINE
     ]
     return asked[done:]
 
@@ -436,7 +485,14 @@ def run_hermes_contract(container: str) -> subprocess.CompletedProcess[str]:
     discovers the plugin exactly as the gateway did."""
     return subprocess.run(
         [
-            "docker", "exec", "-i", "-u", "hermes", container, HERMES_PYTHON, "-",
+            "docker",
+            "exec",
+            "-i",
+            "-u",
+            "hermes",
+            container,
+            HERMES_PYTHON,
+            "-",
             MANIFEST.read_text(encoding="utf-8"),
         ],
         input=CONTRACT_PROBE.read_text(encoding="utf-8"),
@@ -521,9 +577,7 @@ class Follower:
 
 
 def container_logs(container: str) -> str:
-    return subprocess.run(
-        ["docker", "logs", container], text=True, capture_output=True
-    ).stdout
+    return subprocess.run(["docker", "logs", container], text=True, capture_output=True).stdout
 
 
 def exit_code_of(container: str) -> int | None:
@@ -676,6 +730,7 @@ def run(version: str, fixture_dir: Path) -> None:
             + context_failures(container_logs(mock), CONTEXT_CANARY in fixture_text)
             + summary_failures(container_logs(mock), SUMMARY_CANARY in fixture_text)
             + memory_failures(container_logs(mock), fixture_text, builtin_memory_files(hermes))
+            + file_failures(container_logs(mock), fixture_text, lines)
         )
         if failures:
             raise Failure("; ".join(failures), the_other_side())

@@ -118,6 +118,25 @@
         "ref": {
           "type": "string",
           "maxLength": 1024
+        },
+        "localPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Present when the companion prefetched the file, because the plugin's hello asked it to: where it is, relative to the workspace the companion's hello names. A brief's entries only; never on an opener."
+        },
+        "prefetchError": {
+          "type": "object",
+          "required": [
+            "class"
+          ],
+          "description": "Present when a prefetch the plugin asked for did not happen for this attachment — `over_budget`, a platform class (`transfer_denied`, `file_too_large`, …) or the companion's own. The attachment can still be fetched with `files.download`.",
+          "properties": {
+            "class": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            }
+          }
         }
       }
     }

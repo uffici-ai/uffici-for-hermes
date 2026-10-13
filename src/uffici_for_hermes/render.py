@@ -13,7 +13,10 @@ inserted here would be an opinion nobody could audit.
 
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
+
+from .files import attachment_suffix
 
 #: A gap this long between entries earns a timestamp line. Below it the reading
 #: order is obvious and a timestamp per entry is noise the model pays for.
@@ -51,12 +54,18 @@ def _parse_at(value: Any) -> datetime | None:
         return None
 
 
-def _attachment_lines(entry: dict[str, Any]) -> list[str]:
+def _attachment_lines(
+    entry: dict[str, Any], workspace: Path | None = None, fetchable: bool = False
+) -> list[str]:
     """One reference line per attachment.
 
     By REFERENCE, never by content: an attachment is a path the agent's own
     tools open, and inlining it here would put a file's bytes into every turn
-    that merely mentions it.
+    that merely mentions it. 🔴 A file the companion prefetched (#2674) still gets
+    its line, naming where it is on this machine — Hermes also receives it as
+    media, and the line is what ties that file to the message that carried it.
+    One that was not is named with why and, when ``uffici_download`` is offered
+    (``fetchable``), how to fetch it.
     """
     out: list[str] = []
     for attachment in entry.get("attachments") or []:
@@ -65,11 +74,17 @@ def _attachment_lines(entry: dict[str, Any]) -> list[str]:
         name = str(attachment.get("name") or "").strip()
         ref = str(attachment.get("ref") or "").strip()
         if name or ref:
-            out.append(f"  [attachment] {name or ref}" + (f" — {ref}" if name and ref else ""))
+            out.append(
+                f"  [attachment] {name or ref}"
+                + (f" — {ref}" if name and ref else "")
+                + attachment_suffix(attachment, workspace, fetchable)
+            )
     return out
 
 
-def render_entry(entry: dict[str, Any]) -> list[str]:
+def render_entry(
+    entry: dict[str, Any], *, workspace: Path | None = None, fetchable: bool = False
+) -> list[str]:
     """One entry as the lines it contributes."""
     author = entry.get("author") or {}
     kind = str(entry.get("kind") or "").strip()
@@ -98,11 +113,17 @@ def render_entry(entry: dict[str, Any]) -> list[str]:
         # did — and a reader that refused one would make it a breaking change.
         lines = [f"{_label_for(author)} [{kind}]: {text}"]
 
-    return [*lines, *_attachment_lines(entry)]
+    return [*lines, *_attachment_lines(entry, workspace, fetchable)]
 
 
-def render_entries(entries: Iterable[dict[str, Any]]) -> str:
-    """A run of entries as one block of text."""
+def render_entries(
+    entries: Iterable[dict[str, Any]],
+    *,
+    workspace: Path | None = None,
+    fetchable: bool = False,
+) -> str:
+    """A run of entries as one block of text. ``workspace`` is where the companion's
+    files are on this machine, and ``fetchable`` whether ``uffici_download`` is offered."""
     out: list[str] = []
     previous: datetime | None = None
     for entry in entries:
@@ -113,7 +134,7 @@ def render_entries(entries: Iterable[dict[str, Any]]) -> str:
             out.append(f"[{at.isoformat()}]")
         if at is not None:
             previous = at
-        out.extend(render_entry(entry))
+        out.extend(render_entry(entry, workspace=workspace, fetchable=fetchable))
     return "\n".join(out)
 
 

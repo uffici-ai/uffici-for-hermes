@@ -42,6 +42,12 @@ passed, so each is checked here against Hermes's own code:
   in ``state.db`` must each route to a session with no transcript (``fresh``), and a
   session with turns must route to itself (``resumed``). And the Hermes this probe runs
   in must be inside the range the plugin declares.
+- **Files cross in Hermes's own conventions.** A person's file reaches Hermes as a local
+  path in ``MessageEvent.media_urls`` with its type in ``media_types``; a file the agent
+  makes leaves through a ``MEDIA:`` tag ``extract_media`` takes out of the reply, which
+  Hermes's own delivery hands to the adapter's ``send_document`` / ``send_image_file`` —
+  never to the base class's failure notice. And the manifest makes the workspace a root
+  Hermes's strict delivery policy accepts.
 - **Hermes's own log lines reach a root handler.** The plugin ships them with one
   handler on the root logger: that works only while Hermes logs a turn through
   Python ``logging`` on a named logger that propagates, with the root at INFO or
@@ -777,6 +783,139 @@ def _root_handler_verdict(factory, home: str, root) -> str | None:
     return None
 
 
+def media_reaches_the_adapters_hooks(factory) -> str | None:
+    """Files in and out, in Hermes's own conventions (#2674).
+
+    In: ``MessageEvent`` carries a file as a local path in ``media_urls`` with its MIME type
+    in ``media_types``, and reads ``media_text_inlined`` False as "tell the agent to open
+    it". Out: ``extract_media`` takes a ``MEDIA:<path>`` tag out of a reply, and Hermes's
+    own delivery hands a document to ``send_document`` and an image (through its batch) to
+    ``send_image_file`` — both the ADAPTER's, so the file becomes an attachment on the
+    reply instead of Hermes's failure notice. Run through Hermes's own delivery method with
+    the upload stubbed: the companion is not here, and the hooks are what is pinned.
+    """
+    import asyncio
+    import dataclasses
+    import importlib
+    import tempfile
+
+    import gateway.run_inbound as run_inbound
+    from gateway.config import PlatformConfig
+    from gateway.platforms import base
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.event import MessageEvent
+
+    fields = {field.name for field in dataclasses.fields(MessageEvent)}
+    if not {"media_urls", "media_types", "media_text_inlined"} <= fields:
+        return "Hermes's MessageEvent no longer carries media_urls / media_types"
+    if drifted := read_site(
+        run_inbound, "display_name, agent_path, mtype, content_inlined=inline_flag is not False,"
+    ):
+        return drifted
+    media, cleaned = BasePlatformAdapter.extract_media(
+        "Here is the report.\nMEDIA:/tmp/uffici-probe/report.pdf"
+    )
+    if media != [("/tmp/uffici-probe/report.pdf", False)] or "MEDIA:" in cleaned:
+        return f"extract_media no longer takes a MEDIA: tag out of a reply: {media!r}"
+    package = factory.__module__.rsplit(".", 1)[0]
+    files = importlib.import_module(f"{package}.files")
+    if files.HERMES_IMAGE_TYPES != base.SUPPORTED_IMAGE_DOCUMENT_TYPES:
+        return "the images Hermes shows a model are not the plugin's image table"
+    adapter = factory(PlatformConfig(enabled=True))
+    for name in ("send_document", "send_image_file"):
+        ours, theirs = getattr(type(adapter), name), getattr(BasePlatformAdapter, name)
+        if ours is theirs:
+            return f"the adapter does not override {name}: a delivered file is a failure notice"
+        wanted = inspect.signature(theirs).parameters
+        have = inspect.signature(ours).parameters
+        missing = [
+            p for p in wanted if p not in have and wanted[p].kind is not wanted[p].VAR_KEYWORD
+        ]
+        if missing:
+            return f"Hermes calls {name} with {missing}, which the adapter does not take"
+
+    delivered: list[tuple[str, str | None]] = []
+
+    async def attach(request_id: str, source: str, name: str | None = None):
+        delivered.append((Path(source).name, request_id))
+        return {"id": f"probe-{len(delivered)}", "name": Path(source).name, "ref": "r"}, None
+
+    adapter._files.attach = attach  # noqa: SLF001 — the upload, without a companion
+    adapter._open_request["probe"] = "probe-request"  # noqa: SLF001
+    results: list = []
+    with tempfile.TemporaryDirectory() as directory:
+        pdf, png = Path(directory, "report.pdf"), Path(directory, "chart.png")
+        pdf.write_bytes(b"%PDF-1.7")
+        png.write_bytes(b"\x89PNG")
+        event = SimpleNamespace(source=SimpleNamespace(chat_id="probe"))
+        asyncio.run(
+            adapter._deliver_media_attachments(  # noqa: SLF001 — Hermes's own delivery
+                event, [(str(pdf), False), (str(png), False)], [],
+                force_document_attachments=False, human_delay=0.0, metadata={},
+                record_delivery=results.append,
+            )
+        )
+    if sorted(delivered) != [("chart.png", "probe-request"), ("report.pdf", "probe-request")]:
+        return f"Hermes's delivery did not reach the adapter's hooks with both files: {delivered!r}"
+    if not all(getattr(result, "success", False) for result in results):
+        return "Hermes recorded a delivered file as failed"
+    outbox = adapter._outbox.get("probe-request") or {}  # noqa: SLF001
+    if len(outbox.get("attachments", [])) != 2:
+        return "the files Hermes delivered are not waiting for the request's post"
+    return None
+
+
+def workspace_is_a_media_root(manifest: dict) -> str | None:
+    """The manifest makes the workspace a root Hermes delivers media from (#2674).
+
+    ``uffici setup`` writes ``UFFICI_HERMES_MEDIA_DIR`` (the harness home and the manifest's
+    workspace) into Hermes's environment and sets ``gateway.media_delivery_allow_dirs`` to
+    a list naming it; Hermes expands ``${…}`` when it loads its configuration. Checked with
+    Hermes's STRICT policy, where only a root (or a fresh file) is delivered: an old file in
+    the workspace must be deliverable, and one beside it outside any root must not.
+    """
+    import os
+    import tempfile
+
+    import yaml
+    from gateway.platforms.base import validate_media_delivery_path
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    variable = "UFFICI_HERMES_MEDIA_DIR"
+    template = manifest.get("env", {}).get(variable)
+    if not template or not manifest.get("workspace"):
+        return "the manifest names no workspace for Hermes to deliver media from"
+    previous = os.environ.get(variable)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        media_dir = template.replace("${home}", home)
+        if Path(media_dir) != Path(home, manifest["workspace"]):
+            return f"{variable} is not the workspace the companion records: {template!r}"
+        Path(media_dir).mkdir(parents=True)
+        config = configured(manifest)
+        config.setdefault("gateway", {})["strict"] = True
+        Path(home, "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+        inside, outside = Path(media_dir, "made.pdf"), Path(home, "elsewhere.pdf")
+        for path in (inside, outside):
+            path.write_bytes(b"%PDF-1.7")
+            os.utime(path, (1, 1))
+        os.environ[variable] = media_dir
+        token = set_hermes_home_override(home)
+        try:
+            delivered_inside = validate_media_delivery_path(str(inside))
+            delivered_outside = validate_media_delivery_path(str(outside))
+        finally:
+            reset_hermes_home_override(token)
+            if previous is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = previous
+    if delivered_outside is not None:
+        return "strict policy delivered an old file outside every root: the probe proves nothing"
+    if delivered_inside is None:
+        return "Hermes would not deliver a file the agent saved in the Uffici workspace"
+    return None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("usage: python - <manifest json>", file=sys.stderr)
@@ -798,6 +937,8 @@ def main(argv: list[str]) -> int:
         ("memory prefetch", lambda: prefetch_lands_fenced_on_the_user_side(factory)),
         ("harness drift", lambda: drift_reads_hermes_own_config(factory, manifest)),
         ("session freshness", lambda: freshness_is_hermes_routing(factory)),
+        ("media hooks", lambda: media_reaches_the_adapters_hooks(factory)),
+        ("media root", lambda: workspace_is_a_media_root(manifest)),
     ]
     for name, check in checks:
         failure = check()

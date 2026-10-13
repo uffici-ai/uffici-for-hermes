@@ -30,11 +30,14 @@ services:
       # The fixture's ticket raises Hermes to info; the machine's floor must match,
       # or the stricter of the two keeps Hermes's lines at warn (#2267).
       UFFICI_LOG_LEVEL_HARNESS: "info"
+      # The file workspace (#2679), shared with Hermes and the mock at the SAME path.
+      UFFICI_WORKSPACE: "/opt/data/uffici-workspace"
     volumes:
       # 🔴 Required, and `:?` is safe HERE: no other compose file includes this
       # one, so the marker can only stop a run that forgot the fixture.
       - "${UFFICI_E2E_FIXTURE_DIR:?set by dev/e2e.py — the release's fixture directory}:/fixture:ro"
       - companion-home:/var/lib/uffici
+      - uffici-workspace:/opt/data/uffici-workspace
     restart: "no"
 
   hermes:
@@ -50,11 +53,14 @@ services:
       UFFICI_WIRE_TOKEN: "${UFFICI_WIRE_TOKEN:-}"
       # The mock authenticates nobody; Hermes wants the variable present.
       OPENROUTER_API_KEY: "mock-no-key"
-      # 🔴 Never the root override. The image refuses a root gateway on purpose.
-      HERMES_UID: "${HERMES_UID:-1000}"
-      HERMES_GID: "${HERMES_GID:-1000}"
+      # 🔴 Never the root override. The image refuses a root gateway on purpose — and the
+      # companion image's uid, so both open the files in the shared workspace (#2679).
+      HERMES_UID: "${HERMES_UID:-65532}"
+      HERMES_GID: "${HERMES_GID:-65532}"
+      UFFICI_HERMES_MEDIA_DIR: "/opt/data/uffici-workspace"
     volumes:
       - hermes-data:/opt/data
+      - uffici-workspace:/opt/data/uffici-workspace
       - ../src/uffici_for_hermes:/opt/data/plugins/uffici-for-hermes:ro
       # The deterministic model: the run needs no secret and spends nothing.
       - ./config.mock.yaml:/opt/data/config.yaml:ro
@@ -64,8 +70,20 @@ services:
     build:
       context: ./model_mock
       dockerfile: Dockerfile
+    environment:
+      MODEL_MOCK_WORKSPACE: "/opt/data/uffici-workspace"
+    volumes:
+      - uffici-workspace:/opt/data/uffici-workspace
     restart: "no"
 
 volumes:
   hermes-data:
   companion-home:
+  # 🔴 The pod's shared file workspace (#2679): a tmpfs owned by the companion's uid, so the
+  # companion, Hermes (remapped to it) and the mock (which runs as it) all write it.
+  uffici-workspace:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=65532,gid=65532,mode=0770"

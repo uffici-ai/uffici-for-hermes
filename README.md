@@ -35,6 +35,10 @@ Uffici conversation**, and what the session sends is the agent's answer.
    folders, the conversation — and Hermes reads it ahead of the person's message. The agent
    can look for more, remember a fact, mark one it remembered as no longer true, and see what
    a fact replaced, all in Uffici, where people see, edit and delete what it keeps.
+7. Files cross in both directions. A file a person attaches reaches Hermes as a local file,
+   the way Hermes's other platforms deliver media — an image its model can see, a document
+   it can read — and a file the agent sends the way Hermes always does (a `MEDIA:` path in
+   its reply) arrives in Uffici as an attachment on the agent's reply. See [Files](#files).
 
 ## Requirements
 
@@ -69,9 +73,11 @@ For this plugin, `uffici setup` fetches `uffici-for-hermes.tar.gz` from this rep
 latest release, verifies it against the release's checksum list, and follows the install
 manifest it carries ([uffici-plugin.json](uffici-plugin.json)): it copies the plugin into
 Hermes's plugin directory, switches the Uffici platform on and two of Hermes's own chat
-notices off (see [Hermes's own notices](#hermess-own-notices)) with `hermes config set`, writes
-the companion's socket and token file into Hermes's environment file, and enables the plugin
-by name. Then restart the Hermes gateway.
+notices off (see [Hermes's own notices](#hermess-own-notices)) with `hermes config set`, makes
+the files workspace (`uffici-workspace` in the Hermes home) a directory Hermes delivers files
+from (see [Files](#files)), writes the companion's socket and token file and the workspace's
+path into Hermes's environment file, and enables the plugin by name. Then restart the Hermes
+gateway.
 
 To upgrade later, run `uffici upgrade` on the same machine: it moves the companion and this
 plugin to their latest releases and sets Hermes's configuration again. When Hermes runs as its
@@ -95,6 +101,7 @@ hermes config set display.memory_notifications off
 hermes config set memory.provider uffici-for-hermes
 hermes config set memory.memory_enabled false
 hermes config set memory.user_profile_enabled false
+hermes config set gateway.media_delivery_allow_dirs '["${UFFICI_HERMES_MEDIA_DIR}"]'
 ```
 
 Then tell the plugin where the companion is. On a laptop or server, the companion's Unix
@@ -105,8 +112,12 @@ default), written into the environment file Hermes reads:
 cat >> "$(hermes config env-path)" <<EOF
 UFFICI_WIRE_SOCKET=$HOME/.uffici/wire.sock
 UFFICI_WIRE_TOKEN_FILE=$HOME/.uffici/wire-token
+UFFICI_HERMES_MEDIA_DIR=${HERMES_HOME:-$HOME/.hermes}/uffici-workspace
 EOF
 ```
+
+`UFFICI_HERMES_MEDIA_DIR` is the [files workspace](#files): give the companion the same
+directory as its `UFFICI_WORKSPACE` (`uffici setup` records it for the companion on its own).
 
 In a pod, its loopback address and the token from a Secret instead. Every variable:
 
@@ -120,6 +131,7 @@ In a pod, its loopback address and the token from a Secret instead. Every variab
 | `UFFICI_CONTEXT_SHARE` | The fraction of this Hermes's context window Uffici may fill with conversation content. Default **0.25**, less a 10 % margin for tokenizer drift. |
 | `UFFICI_CONTEXT_WINDOW_TOKENS` | A correction, not a setting you need: the model's context window in tokens, used instead of the one Hermes reports. Leave it unset unless Hermes's own number is wrong. |
 | `UFFICI_LOG_SHIPPING` | `off` keeps Hermes's log lines and the plugin's on this machine. Default on — see [Hermes's log lines](#hermess-log-lines). |
+| `UFFICI_HERMES_MEDIA_DIR` | The files workspace, read by Hermes (not the plugin) through `gateway.media_delivery_allow_dirs`, so a file the agent saves there is one Hermes delivers. Setup writes `$HERMES_HOME/uffici-workspace`. |
 
 The plugin never ships a context window of its own. It asks Hermes which model it runs and what
 window Hermes itself uses for that model — the same number Hermes compacts its context against —
@@ -287,6 +299,43 @@ keeps — never in files on this machine.
   the plugin also sends the Hermes versions it supports and its verdict on the running one;
   the doctor prints them on its `harness` line. An unsupported Hermes still connects and
   answers, and the plugin logs a warning when it connects.
+
+### Files
+
+The companion moves every file, in both directions, between your organization's Uffici
+files and one directory on this machine: the **workspace**, `uffici-workspace` inside the
+Hermes home. A transfer cut halfway resumes where it stopped, and no file ever passes
+through the model, a tool's answer or a log line — only paths, sizes and references do.
+
+- **A person's file arrives as a local file.** The plugin asks the companion to download a
+  turn's attachments, up to 25 MiB per turn, before Hermes sees the message. Each one reaches
+  Hermes the way its other platforms deliver media: an image (JPEG, PNG, WebP, GIF) the model
+  can see, and any other file as a document Hermes tells the agent to open with its own tools.
+  The message still names every attachment, with where it is on this machine. One that was
+  not downloaded — over the budget, or from earlier in the conversation — is named with the
+  reason, and the agent fetches it with `uffici_download` when it needs it.
+- **A file the agent makes arrives as an attachment.** When the agent puts a `MEDIA:` path in
+  its reply, as it would on any Hermes platform, the plugin uploads the file and the agent's
+  reply in Uffici carries it as an attachment. **Only a file inside the workspace is ever
+  sent**, and nothing is ever copied into it: a file anywhere else — including one Hermes's
+  own delivery policy allows, and a link in the workspace that leads out of it — is not
+  attached, and the reply says the file is not in the shared workspace. The agent saves what
+  it wants to send in the workspace first. Files Hermes's own tools write into Hermes's caches
+  (a generated image, for instance) are outside it too, and Hermes has no setting that moves
+  those caches; the agent saves a copy in the workspace. When a file cannot be attached —
+  outside the workspace, refused by Uffici, missing, too large — the reply says so, naming
+  the file and why: it never disappears.
+- **Two tools, in the `uffici` toolset**, while the companion carries files and your
+  organization lets the agent read files (`uffici_download`) or write them (`uffici_upload`):
+  `uffici_download` brings an attachment (by its id) or a file in Uffici Files (by its path)
+  into the workspace and answers where it landed; `uffici_upload` takes a file from the
+  workspace and attaches it to the agent's reply, or saves it in Uffici Files at a path the
+  agent chooses — replacing a file there asks a person first. Their paths on this side are
+  relative to the workspace. Uffici checks the agent's file permissions on every transfer.
+- **The workspace is a directory Hermes delivers files from — for this whole Hermes.** Setup
+  adds it to `gateway.media_delivery_allow_dirs`, so even Hermes's strict delivery policy
+  sends a file the agent saved there. That setting is Hermes-wide and setup replaces its list:
+  add your own directories after the workspace's entry.
 
 ## What it is not
 

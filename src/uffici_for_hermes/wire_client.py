@@ -169,10 +169,13 @@ def plugin_hello(
     budget_tokens: int,
     drift: dict[str, list[str]] | None = None,
     harness_support: dict[str, Any] | None = None,
+    capabilities: dict[str, Any] | None = None,
 ) -> dict:
     """The first frame, carrying the token — and, when the plugin read it, the harness's
     drift from the plugin policy (#2406, ``drift.py``) and the Hermes versions this release
-    supports with its verdict on the running one (#2414, ``support.py``)."""
+    supports with its verdict on the running one (#2414, ``support.py``) — and what the
+    plugin asks the companion to do for its harness (``capabilities``, #2674): an older
+    companion ignores a field it does not know."""
     hello = {
         "v": WIRE_VERSION,
         "type": "hello",
@@ -187,6 +190,8 @@ def plugin_hello(
         hello["drift"] = drift
     if harness_support is not None:
         hello["harnessSupport"] = harness_support
+    if capabilities:
+        hello["capabilities"] = capabilities
     return hello
 
 
@@ -248,6 +253,7 @@ class WireClient:
         connect_fn: Callable[[WireAddress], Awaitable[Any]],
         drift: Callable[[], Awaitable[dict[str, list[str]] | None]] | None = None,
         harness_support: dict[str, Any] | None = None,
+        capabilities: dict[str, Any] | None = None,
         on_frame: Callable[[dict[str, Any]], Awaitable[None]],
         on_connected: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         on_disconnected: Callable[[], None] | None = None,
@@ -260,6 +266,7 @@ class WireClient:
         self._budget_tokens = budget_tokens
         self._drift = drift
         self._harness_support = harness_support
+        self._capabilities = capabilities
         self._connect_fn = connect_fn
         self._on_frame = on_frame
         self._on_connected = on_connected
@@ -336,6 +343,7 @@ class WireClient:
                 self._budget_tokens,
                 drift,
                 self._harness_support,
+                self._capabilities,
             )
             await connection.send(encode_frame(hello))
             async for raw in connection:

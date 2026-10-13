@@ -36,6 +36,15 @@ from .budget import BudgetUnavailable, context_budget_tokens, resolve_share, res
 from .calls import CallClient
 from .context import render_context
 from .drift import read_drift
+from .files import (
+    FEATURE_FILES,
+    MAX_POST_ATTACHMENTS,
+    PREFETCH_MAX_BYTES,
+    FileTools,
+    display_name,
+    inbound_media,
+    not_attached,
+)
 from .hint import PLATFORM_HINT
 from .log_shipping import LogFlusher, UfficiLogHandler, install, shared_handler
 from .memory import FEATURE_MEMORY, MemoryTools, publish, report_memory_drift, withdraw
@@ -240,6 +249,11 @@ FEATURE_QUESTION = "question"
 #: its predecessor had accepted" (#2234, #2273), in its hello.
 FEATURE_REDELIVERY = "redelivery"
 
+#: What this plugin asks the companion to do for Hermes (#2674): prefetch a brief's
+#: attachments into the workspace, so a person's file is a local file Hermes can show the
+#: model. The budget is the plugin's, justified beside ``PREFETCH_MAX_BYTES``.
+CAPABILITIES = {"prefetchAttachments": {"maxBytes": PREFETCH_MAX_BYTES}}
+
 #: How long Hermes's startup resume waits for the companion's hello before deciding.
 HELLO_WAIT_SECONDS = 10.0
 
@@ -332,6 +346,11 @@ class UfficiAdapter(BasePlatformAdapter):
         self._calls = CallClient(self._send)
         #: What the attached companion can carry beyond every v1 companion (#2232).
         self._companion_features: frozenset[str] = frozenset()
+        #: The workspace the companion's hello named (#2674), when it carries ``files``: every
+        #: ``localPath`` on the wire is relative to it.
+        self._workspace: Path | None = None
+        #: request id → the files and the notes about files its next post carries (#2674).
+        self._outbox: dict[str, dict[str, list]] = {}
         #: Whether a companion hello has arrived, so a decision that reads the features
         #: waits for them rather than reading an empty set (#2273).
         self._hello_seen: Any = None
@@ -354,6 +373,16 @@ class UfficiAdapter(BasePlatformAdapter):
         #: The agent's Uffici tools as Hermes tools (#2350): registered through the plugin's
         #: own context, each call forwarded on the request open on the conversation the call
         #: was made in. Inert without the companion's ``tools`` feature.
+        #: The two file tools and the upload behind a reply's files (#2674): offered while
+        #: the companion carries ``files`` and the catalog lists the platform's file tools.
+        self._files = FileTools(
+            getattr(plugin_ctx, "register_tool", None),
+            call=self._calls.call,
+            request_for=self._open_request.get,
+            available=lambda: FEATURE_FILES in self._companion_features,
+            workspace=lambda: self._workspace,
+            attached=self._collect_attachment,
+        )
         self._tools = PlatformTools(
             getattr(plugin_ctx, "register_tool", None),
             call=self._calls.call,
@@ -361,6 +390,7 @@ class UfficiAdapter(BasePlatformAdapter):
             enabled=lambda: FEATURE_TOOLS in self._companion_features,
             # 🔴 `uffici_rerun` only beside `tools` (#2454): a re-run is a tool call.
             rerun_enabled=lambda: {FEATURE_TOOLS, FEATURE_TOOLS_RERUN} <= self._companion_features,
+            on_catalog=self._files.on_catalog,
         )
         #: The agent's Uffici memory: the four tools, registered through the same plugin
         #: context while the companion announces ``memory``, and the prefetch Hermes's
@@ -440,6 +470,7 @@ class UfficiAdapter(BasePlatformAdapter):
             budget_tokens=budget,
             drift=self._read_drift,
             harness_support=support,
+            capabilities=CAPABILITIES,
             connect_fn=self._connect_fn or _default_connect,
             on_frame=self._on_frame,
             on_disconnected=self._calls.fail_all,
@@ -464,6 +495,7 @@ class UfficiAdapter(BasePlatformAdapter):
         self._runner = _spawn(self._client.run())
         self._tools.bind_loop(asyncio.get_running_loop())
         self._memory.bind_loop(asyncio.get_running_loop())
+        self._files.bind_loop(asyncio.get_running_loop())
         publish(self._memory.prefetch)
         # The setup's memory keys are Hermes-wide and anyone can change them: say so in the
         # machine's log when they no longer hold.
@@ -502,9 +534,11 @@ class UfficiAdapter(BasePlatformAdapter):
         self._companion_features = frozenset(
             str(name) for name in (features or []) if isinstance(name, str)
         )
+        self._workspace = _workspace_of(frame, self._companion_features)
         self._hello_event().set()
         self._memory.sync()
         self._tools.sync_rerun()
+        self._files.sync()
         runner, self._ready_runner = self._ready_runner, None
         if runner is not None:
             runner.cancel()
@@ -631,6 +665,7 @@ class UfficiAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         # What a companion can carry is that companion's: the next one says so again.
         self._companion_features = frozenset()
+        self._workspace = None
         withdraw(self._memory.prefetch)
         self._hello_seen = None
         # 🔴 A question waiting on the card holds its Hermes turn (#2232 review): forgetting
@@ -696,6 +731,7 @@ class UfficiAdapter(BasePlatformAdapter):
         self._pending_questions.clear()
         self._continues.clear()
         self._admitting.clear()
+        self._outbox.clear()
         self._tools.forget_requests()
         self._calls.fail_all()
 
@@ -950,6 +986,11 @@ class UfficiAdapter(BasePlatformAdapter):
                 extra={"requestId": request_id},
             )
             return SendResult(success=True, message_id=request_id)
+        # The files this turn delivered so far, and the notes about the ones it could not
+        # (#2674): carried by the request's next post, this one.
+        attachments, notes = self._take_outbox(request_id)
+        if notes:
+            text = "\n\n".join([text, *notes])
         if len(text) > POST_TEXT_MAX:
             # Clipped rather than refused: a truncated answer reaches the person,
             # and a refused frame reaches nobody.
@@ -964,9 +1005,12 @@ class UfficiAdapter(BasePlatformAdapter):
         # tools (#2350) — only to a companion that carries them.
         extras = self._tools.take_extras(request_id)
         frame.update(extras)
+        if attachments:
+            frame["attachments"] = attachments
         sent = await self._send(frame)
         if not sent:
             self._tools.give_back(request_id, extras)
+            self._give_back_outbox(request_id, attachments, notes)
             return SendResult(success=False, error="the wire dropped the post")
         self._posts[request_id] = self._posts.get(request_id, 0) + 1
 
@@ -979,6 +1023,166 @@ class UfficiAdapter(BasePlatformAdapter):
             outcome = self._settling_outcome.get(request_id, ProcessingOutcome.SUCCESS)
             self._schedule_done(request_id, outcome)
         return SendResult(success=True, message_id=request_id)
+
+    # ---------------------------------------------------------------- files (#2674)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+        file_name: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """A file Hermes delivers (its ``MEDIA:<path>`` convention) becomes an attachment on
+        the agent's reply.
+
+        🔴 Overriding this hook is what makes the file arrive at all: Hermes's base adapter
+        answers a "friendly failure notice" instead, and only while its warning notices are
+        on — otherwise the file the agent said it attached vanishes. Hermes has already
+        applied its own delivery policy to the path before calling here.
+        """
+        return await self._deliver_file(chat_id, file_path, name=file_name)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """An image Hermes delivers: the same attachment as a document. Hermes batches the
+        images of a reply through ``send_multiple_images``, which calls this per file."""
+        return await self._deliver_file(chat_id, image_path)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """A video is a file too: without this, Hermes's fallback notice is all that arrives."""
+        return await self._deliver_file(chat_id, video_path)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """An audio file is a file too: Hermes sends every audio ``MEDIA:`` file here on a
+        platform other than Telegram."""
+        return await self._deliver_file(chat_id, audio_path)
+
+    async def _deliver_file(
+        self, chat_id: str, path: str, *, name: str | None = None
+    ) -> SendResult:
+        """Upload one file for the conversation's open request, and keep the attachment for
+        the request's next post — or, when it could not be attached, a note naming the file.
+
+        🔴 A refusal is SUCCESS to Hermes, deliberately: the person is told on the reply,
+        which names the file and why. A failure would send Hermes to its own generic
+        notice — a second one, without the reason, or none at all when its warnings are off.
+
+        🔴 Only a file INSIDE the workspace is uploaded (``FileTools.attach``): Hermes's
+        media policy has approved this path, but its roots are wider than the workspace,
+        and the companion's fence — never Hermes's policy — decides what leaves the
+        machine. A file anywhere else is a note: "not in the shared workspace".
+        """
+        conversation_id = str(chat_id)
+        request_id = self._open_request.get(conversation_id)
+        if request_id is None:
+            # 🔴 Dropped, never guessed — the same rule as a reply (see ``send``).
+            logger.warning(
+                "uffici: no open request for conversation %s; dropping a file Hermes delivered",
+                conversation_id,
+                extra={"conversationId": conversation_id},
+            )
+            return SendResult(success=False, error="no open request")
+        attachment, error_class = await self._files.attach(request_id, str(path))
+        if request_id in self._closed:
+            # Withdrawn while the file moved: its post has nowhere to go.
+            return SendResult(success=False, error="the request closed")
+        if attachment is None:
+            self._outbox_for(request_id)["notes"].append(
+                not_attached(display_name(str(path), name), error_class)
+            )
+        else:
+            self._collect_attachment(request_id, attachment)
+        return SendResult(success=True, message_id=request_id)
+
+    def _outbox_for(self, request_id: str) -> dict[str, list]:
+        return self._outbox.setdefault(request_id, {"attachments": [], "notes": []})
+
+    def _collect_attachment(self, request_id: str, attachment: dict[str, str]) -> None:
+        """An upload without ``to`` answered: the request's next post carries it."""
+        if request_id in self._closed:
+            return
+        self._outbox_for(request_id)["attachments"].append(attachment)
+
+    def _take_outbox(self, request_id: str) -> tuple[list[dict[str, str]], list[str]]:
+        """What the request's next post carries: up to the wire's twenty files, and every
+        note about a file that did not make it."""
+        outbox = self._outbox.get(request_id)
+        if not outbox:
+            return [], []
+        attachments = outbox["attachments"][:MAX_POST_ATTACHMENTS]
+        del outbox["attachments"][:MAX_POST_ATTACHMENTS]
+        notes, outbox["notes"] = outbox["notes"], []
+        if not outbox["attachments"]:
+            self._outbox.pop(request_id, None)
+        return attachments, notes
+
+    def _give_back_outbox(
+        self, request_id: str, attachments: list[dict[str, str]], notes: list[str]
+    ) -> None:
+        """A post that did not go keeps its files and notes for the next one."""
+        if not attachments and not notes:
+            return
+        outbox = self._outbox_for(request_id)
+        outbox["attachments"][:0] = attachments
+        outbox["notes"][:0] = notes
+
+    async def _flush_outbox(self, request_id: str) -> None:
+        """Post what no reply carried: Hermes sends a reply's text BEFORE its files, so the
+        files of a turn usually arrive after its last post — they ride one more post, named,
+        made as the turn ends. Never a post with nothing in it."""
+        while True:
+            attachments, notes = self._take_outbox(request_id)
+            if not attachments and not notes:
+                return
+            lines = []
+            if attachments:
+                lines.append(", ".join(a.get("name") or "file" for a in attachments))
+            lines.extend(notes)
+            frame: dict[str, Any] = {
+                "v": 1,
+                "type": "post",
+                "requestId": request_id,
+                "text": "\n\n".join(lines)[:POST_TEXT_MAX],
+            }
+            frame.update(self._tools.take_extras(request_id))
+            if attachments:
+                frame["attachments"] = attachments
+            if not await self._send(frame):
+                logger.warning(
+                    "uffici: the post carrying %d file(s) for request %s could not be sent",
+                    len(attachments),
+                    request_id,
+                    extra={"requestId": request_id},
+                )
+                return
+            self._posts[request_id] = self._posts.get(request_id, 0) + 1
 
     async def _send_exec_approval_prompt(self, prompt: Any) -> SendResult:
         """Hermes wants a person to approve a command: deny it at once, with a reason.
@@ -1053,6 +1257,8 @@ class UfficiAdapter(BasePlatformAdapter):
             # it after the ack. The companion has moved on.
             return
 
+        # The files the turn delivered after its last reply go now, not after the settle.
+        await self._flush_outbox(request_id)
         # 🔴 The close SETTLES rather than firing here. See DONE_SETTLE_SECONDS:
         # a reply can still arrive after this hook, and closing now throws it
         # away.
@@ -1101,6 +1307,8 @@ class UfficiAdapter(BasePlatformAdapter):
         self._settling.pop(request_id, None)
         if request_id in self._closed:
             return
+        # A file uploaded during the settle (a tool's) still reaches the person.
+        await self._flush_outbox(request_id)
 
         # 🔴 The post count is read HERE, not when the hook fired — a reply that
         # arrived during the settle is exactly what this exists to catch, and it
@@ -1170,6 +1378,8 @@ class UfficiAdapter(BasePlatformAdapter):
                 continue
             task = self._settling.pop(request_id)
             task.cancel()
+            await self._flush_outbox(request_id)
+            posts = self._posts.get(request_id, posts)
             self._posts.pop(request_id, None)
             await self._send(_done_frame(request_id, outcome, posts))
             self._forget(request_id)
@@ -1242,9 +1452,20 @@ class UfficiAdapter(BasePlatformAdapter):
         else:
             fresh = await self._session_is_fresh(source)
 
+        # 🔴 A person's file, prefetched by the companion (#2674), reaches Hermes the way its
+        # other platforms deliver media: a local path on the event, with its MIME type, so an
+        # image reaches the model's vision and a document is one Hermes tells it to read —
+        # never inlined, and the reference line still names it beside its message.
+        media_urls, media_types = inbound_media(delta, self._workspace)
         event = MessageEvent(
-            text=render_entries(delta),
-            message_type=MessageType.TEXT,
+            text=render_entries(
+                delta, workspace=self._workspace, fetchable=self._files.download_offered
+            ),
+            message_type=_message_type_for(media_types),
+            media_urls=media_urls,
+            media_types=media_types,
+            # Not inlined into the text: Hermes tells the agent to open each file itself.
+            media_text_inlined=[False] * len(media_urls),
             user_id=source.user_id,
             user_name=source.user_name,
             source=source,
@@ -1435,7 +1656,12 @@ class UfficiAdapter(BasePlatformAdapter):
             return
 
         event: MessageEvent = held["event"]
-        recalled = render_entries(frame.get("entries") or [])
+        # An opener's entries are never prefetched: their files are reference lines only.
+        recalled = render_entries(
+            frame.get("entries") or [],
+            workspace=self._workspace,
+            fetchable=self._files.download_offered,
+        )
         if recalled:
             # 🔴 Above the reason line and still user-side: one block, entered
             # once, stored with the first message of the session.
@@ -1663,6 +1889,7 @@ class UfficiAdapter(BasePlatformAdapter):
         if conversation_id is not None and self._open_request.get(conversation_id) == request_id:
             self._open_request.pop(conversation_id, None)
         self._posts.pop(request_id, None)
+        self._outbox.pop(request_id, None)
         self._awaiting_opener.pop(request_id, None)
         settling = self._settling.pop(request_id, None)
         if settling is not None:
@@ -1832,6 +2059,32 @@ def _question_card(
         "choices": offered,
         "multiSelect": bool(multi_select) and bool(offered),
     }
+
+
+def _workspace_of(frame: Any, features: frozenset[str]) -> Path | None:
+    """The workspace a companion hello names, when it carries ``files`` (#2674).
+
+    Absolute, as the companion sees it; in a pod the shared volume is mounted at the same
+    path in both containers, so the plugin joins every ``localPath`` to it as it is.
+    """
+    if FEATURE_FILES not in features or not isinstance(frame, dict):
+        return None
+    workspace = frame.get("workspace")
+    if not isinstance(workspace, str) or not workspace:
+        return None
+    path = Path(workspace)
+    return path if path.is_absolute() else None
+
+
+def _message_type_for(media_types: list[str]) -> MessageType:
+    """The message-level type Hermes's other adapters set: a photo when every file is an
+    image, a document when any is not, text when there are none. Hermes routes each file by
+    its own MIME first; this is what it falls back to."""
+    if not media_types:
+        return MessageType.TEXT
+    if all(kind.startswith("image/") for kind in media_types):
+        return MessageType.PHOTO
+    return MessageType.DOCUMENT
 
 
 def _utf16_len(text: str) -> int:

@@ -85,6 +85,14 @@ RERUN_SCHEMA: dict[str, Any] = {
     },
 }
 
+#: 🔴 The plugin's two file tools (#2674, ``files.py``): its own, like ``uffici_rerun``, and
+#: never catalog entries — named here so the post-tool hook never reports them as Hermes's.
+DOWNLOAD_TOOL = "uffici_download"
+UPLOAD_TOOL = "uffici_upload"
+
+#: The plugin's own fixed tools: Uffici calls, recorded by the platform, never "activity".
+OWN_TOOLS = frozenset({RERUN_TOOL, DOWNLOAD_TOOL, UPLOAD_TOOL})
+
 #: The Hermes toolset the catalog is registered in — the platform's own name, so Hermes's
 #: implicit ``hermes-uffici`` bundle carries it (see the module docstring).
 TOOLSET = "uffici"
@@ -286,6 +294,7 @@ class PlatformTools:
         rerun_enabled: Callable[[], bool] = lambda: False,
         session_reader: Callable[[], str | None] = session_conversation,
         clock: Callable[[], float] = time.monotonic,
+        on_catalog: Callable[[frozenset[str]], None] | None = None,
     ) -> None:
         self._register_tool = register_tool
         self._call = call
@@ -305,6 +314,10 @@ class PlatformTools:
         #: request id → what its next post carries.
         self._citations: dict[str, list[str]] = {}
         self._activity: dict[str, list[dict[str, str]]] = {}
+        #: Told every catalog read's tool names, offered or not (#2674): the file tools
+        #: follow the catalog's ``read_file`` / ``write_file``, which Hermes's own tools of
+        #: the same name keep from ever being registered here.
+        self._on_catalog = on_catalog
         _INSTANCES.add(self)
 
     # ------------------------------------------------------------------ state
@@ -437,6 +450,13 @@ class PlatformTools:
 
     def apply(self, entries: dict[str, dict[str, Any]]) -> None:
         """Make Hermes's registrations match the catalog: register, replace, dispose."""
+        try:
+            self._apply(entries)
+        finally:
+            if self._on_catalog is not None:
+                self._on_catalog(frozenset(entries))
+
+    def _apply(self, entries: dict[str, dict[str, Any]]) -> None:
         if self._register_tool is None:
             return
         added = removed = changed = 0
@@ -643,7 +663,7 @@ class PlatformTools:
     def on_tool_called(self, tool_name: str, status: str | None) -> None:
         """Hermes's post-tool hook, in the agent's thread: one of HERMES'S tools ran."""
         name = str(tool_name or "")
-        if not name or name in self._catalog or name == RERUN_TOOL or name in BRIDGE_TOOL_NAMES:
+        if not name or name in self._catalog or name in OWN_TOOLS or name in BRIDGE_TOOL_NAMES:
             return
         conversation_id = self._session_reader()
         loop = self._loop

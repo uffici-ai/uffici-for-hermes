@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/files.download.request.schema.json",
+  "title": "files.download request",
+  "description": "plugin → companion, the payload of a `call` with op `files.download`. Download one file of the organization into the workspace, for the request the plugin is answering: an entry's attachment by its `id`, or a Files path. Exactly one of the two. The companion refuses a request it did not ring (`not_permitted`) and writes only inside its workspace.",
+  "type": "object",
+  "required": [
+    "requestId"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "attachmentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "An entry attachment's `id`, as a brief or an opener carried it."
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "A path in the organization's Files, as the platform's file tools name it."
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "attachmentId"
+      ]
+    },
+    {
+      "required": [
+        "path"
+      ]
+    }
+  ]
+}

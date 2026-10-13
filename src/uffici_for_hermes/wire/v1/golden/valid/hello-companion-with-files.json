@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "hello",
+  "companionVersion": "0.12.0",
+  "features": [
+    "question",
+    "redelivery",
+    "tools",
+    "rerun",
+    "memory",
+    "files"
+  ],
+  "workspace": "/home/agent/.uffici/workspace"
+}
