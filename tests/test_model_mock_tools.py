@@ -185,8 +185,9 @@ REFUSED = json.dumps(
             "tool": "list_boards",
             "scope": "boards.read",
             "message": (
-                "This agent has no access to do this in this place, so nothing ran; tell the "
-                "person, and an admin of this organization can grant this agent access here."
+                "This agent has no access to do this anywhere in this organization, so nothing "
+                "ran; tell the person, and an admin of this organization can grant this agent "
+                "access."
             ),
         },
     },
@@ -212,7 +213,7 @@ def test_a_refused_result_is_relayed_with_its_sentence(
         content = json.loads(raw)["choices"][0]["message"]["content"]
     assert content.startswith("[mock] the tool said: ")
     assert "scope_missing" in content
-    assert "This agent has no access to do this in this place" in content
+    assert "This agent has no access to do this anywhere in this organization" in content
 
 
 def test_a_narrowed_result_keeps_its_flag_in_the_reply(mock_server: subprocess.Popen) -> None:
