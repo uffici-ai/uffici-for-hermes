@@ -30,13 +30,24 @@ Uffici conversation**, and what the session sends is the agent's answer.
    organization has allowed them — appear in Hermes as Hermes tools. When the agent uses one,
    the call goes through the companion to Uffici, on the turn it was made in, and its answer
    comes back to the agent.
+6. The agent's memory is your organization's Uffici memory, not Hermes's. Before each turn the
+   plugin recalls what was remembered where the conversation sits — the organization, its
+   folders, the conversation — and Hermes reads it ahead of the person's message. The agent
+   can look for more, remember a fact, mark one it remembered as no longer true, and see what
+   a fact replaced, all in Uffici, where people see, edit and delete what it keeps.
+7. Files cross in both directions. A file a person attaches reaches Hermes as a local file,
+   the way Hermes's other platforms deliver media — an image its model can see, a document
+   it can read — and a file the agent sends the way Hermes always does (a `MEDIA:` path in
+   its reply) arrives in Uffici as an attachment on the agent's reply. See [Files](#files).
 
 ## Requirements
 
 - A Hermes you run as a **gateway** (`hermes gateway`), since the plugin is a gateway
   platform. The plugin is written against **Hermes 0.21.5** (commit `f97608f1`, release
-  `v2026.9.24`): its adapter uses that version's platform interfaces, and a different version
-  may load but is untested.
+  `v2026.9.24`) and supports `>=0.21.5,<0.22`: its adapter uses those versions' platform
+  interfaces. A Hermes outside the range still connects and answers, but may misbehave without
+  an error, so the plugin logs a warning when it connects and `uffici doctor` shows the
+  harness as not supported.
 - Python 3.13, which is what Hermes's own environment provides. The plugin runs inside that
   environment and depends only on libraries Hermes already ships (`websockets`, `httpx`).
 - The [Uffici companion](https://github.com/uffici-ai/uffici-companion) on the same machine
@@ -62,9 +73,11 @@ For this plugin, `uffici setup` fetches `uffici-for-hermes.tar.gz` from this rep
 latest release, verifies it against the release's checksum list, and follows the install
 manifest it carries ([uffici-plugin.json](uffici-plugin.json)): it copies the plugin into
 Hermes's plugin directory, switches the Uffici platform on and two of Hermes's own chat
-notices off (see [Hermes's own notices](#hermess-own-notices)) with `hermes config set`, writes
-the companion's socket and token file into Hermes's environment file, and enables the plugin
-by name. Then restart the Hermes gateway.
+notices off (see [Hermes's own notices](#hermess-own-notices)) with `hermes config set`, makes
+the files workspace (`uffici-workspace` in the Hermes home) a directory Hermes delivers files
+from (see [Files](#files)), writes the companion's socket and token file and the workspace's
+path into Hermes's environment file, and enables the plugin by name. Then restart the Hermes
+gateway.
 
 To upgrade later, run `uffici upgrade` on the same machine: it moves the companion and this
 plugin to their latest releases and sets Hermes's configuration again. When Hermes runs as its
@@ -85,6 +98,10 @@ hermes plugins enable uffici-for-hermes
 hermes config set gateway.platforms.uffici.enabled true
 hermes config set display.platforms.uffici.long_running_notifications false
 hermes config set display.memory_notifications off
+hermes config set memory.provider uffici-for-hermes
+hermes config set memory.memory_enabled false
+hermes config set memory.user_profile_enabled false
+hermes config set gateway.media_delivery_allow_dirs '["${UFFICI_HERMES_MEDIA_DIR}"]'
 ```
 
 Then tell the plugin where the companion is. On a laptop or server, the companion's Unix
@@ -95,8 +112,12 @@ default), written into the environment file Hermes reads:
 cat >> "$(hermes config env-path)" <<EOF
 UFFICI_WIRE_SOCKET=$HOME/.uffici/wire.sock
 UFFICI_WIRE_TOKEN_FILE=$HOME/.uffici/wire-token
+UFFICI_HERMES_MEDIA_DIR=${HERMES_HOME:-$HOME/.hermes}/uffici-workspace
 EOF
 ```
+
+`UFFICI_HERMES_MEDIA_DIR` is the [files workspace](#files): give the companion the same
+directory as its `UFFICI_WORKSPACE` (`uffici setup` records it for the companion on its own).
 
 In a pod, its loopback address and the token from a Secret instead. Every variable:
 
@@ -110,6 +131,7 @@ In a pod, its loopback address and the token from a Secret instead. Every variab
 | `UFFICI_CONTEXT_SHARE` | The fraction of this Hermes's context window Uffici may fill with conversation content. Default **0.25**, less a 10 % margin for tokenizer drift. |
 | `UFFICI_CONTEXT_WINDOW_TOKENS` | A correction, not a setting you need: the model's context window in tokens, used instead of the one Hermes reports. Leave it unset unless Hermes's own number is wrong. |
 | `UFFICI_LOG_SHIPPING` | `off` keeps Hermes's log lines and the plugin's on this machine. Default on — see [Hermes's log lines](#hermess-log-lines). |
+| `UFFICI_HERMES_MEDIA_DIR` | The files workspace, read by Hermes (not the plugin) through `gateway.media_delivery_allow_dirs`, so a file the agent saves there is one Hermes delivers. Setup writes `$HERMES_HOME/uffici-workspace`. |
 
 The plugin never ships a context window of its own. It asks Hermes which model it runs and what
 window Hermes itself uses for that model — the same number Hermes compacts its context against —
@@ -197,6 +219,12 @@ such a setting appears.
   history, on every turn — so an edit in Uffici applies to the agent's next answer. When part
   of it could not be included, the agent is told so and tells the person. With an older
   companion no context arrives, and Hermes runs on the plugin's fixed platform note alone.
+- **A long conversation opens with its summary.** When Hermes starts a fresh session for a
+  conversation that has grown long, Uffici sends a summary of the earlier messages ahead of
+  the recent ones. The plugin passes it on exactly as Uffici wrote it — a first line saying
+  what it covers and how the agent can read the messages behind it, then the summary — as
+  part of the conversation, never on Hermes's system side. The agent reads the earlier
+  messages themselves with its Uffici conversation tools.
 - **A question reaches the person as a question.** When the agent asks something (Hermes's
   `clarify`), the person sees it in Uffici as a card with the choices offered and a field for
   their own answer, and the agent picks up from their answer. With an older companion the
@@ -220,14 +248,94 @@ such a setting appears.
   so to the agent, and the first call asks that person in the conversation. Outside a Uffici
   turn — from another chat platform this Hermes serves, or a scheduled job — a Uffici tool
   does nothing and tells the agent why.
+- **A call can be run again.** While the companion carries it, the plugin also offers one tool
+  of its own in the `uffici` toolset, `uffici_rerun`: given a call's `tool_call` URN — one the
+  agent sees in a summary, a search result or a trace — Uffici runs that call again, now, as a
+  new call with the arguments it had, and a call that needs approval asks again. A call whose
+  arguments were not kept cannot be re-run, and the agent is told so.
 - **Hermes's tool search applies to them too.** Hermes keeps plugin tools behind its own tool
   search by default, so the agent finds a Uffici tool there rather than in its first list.
   The plugin writes no toolset setting: Hermes enables a plugin's toolset on its own, and
   `hermes tools` is where you can switch the `uffici` toolset off for a platform.
-- **Hermes's own tools and memory stay local.** What Hermes does with its local tools — its
-  terminal, its files, a web search — runs on this machine. The answer the agent posts names
-  which of those tools it used, never what it sent them or what they returned. Hermes's local
-  memory is not routed through Uffici.
+- **Hermes's own tools stay local.** What Hermes does with its local tools — its terminal,
+  its files, a web search — runs on this machine. The answer the agent posts names which of
+  those tools it used, never what it sent them or what they returned.
+
+### Memory
+
+The agent remembers in Uffici, where your organization can see, correct and delete what it
+keeps — never in files on this machine.
+
+- **Recall comes first, on every turn.** Before Hermes calls its model, the plugin asks Uffici
+  for what was remembered where the conversation sits, using the turn's own words, and Hermes
+  places it beside the person's message as recalled memory. Each line names its level — the
+  conversation, a folder, the organization — and the fact's URN; when two levels say the same
+  thing, the closest wins. It never holds a turn up for more than a few seconds. When memory cannot be reached — Uffici
+  is down, the companion is not connected, or the companion is older than this plugin — the
+  agent reads a sentence saying so and tells the person it could not check, rather than acting
+  as if nothing was remembered.
+- **Four tools, in the `uffici` toolset**, offered while the companion carries memory:
+  `uffici_recall` looks for something else than the turn's words; `uffici_remember` records
+  ONE fact about the work in this conversation — never an appraisal, rating or judgement of a
+  person; `uffici_forget` marks a fact the agent remembered in this conversation as no longer
+  true (it is never deleted, and facts from other levels or written by people cannot be
+  forgotten by the agent); `uffici_unfold` shows what a fact or a context statement replaced.
+  Outside a Uffici turn they do nothing and tell the agent why.
+- **People decide what lasts.** A remembered fact stays on its conversation until a person
+  promotes it to a folder or the organization, edits it, or deletes it, in the conversation's
+  Memory in the Uffici portal.
+- **Hermes's own memory is off — for this whole Hermes.** Setup selects the plugin as Hermes's
+  memory provider (`memory.provider`) and switches off Hermes's `MEMORY.md` and `USER.md`
+  (`memory.memory_enabled`, `memory.user_profile_enabled`). These are Hermes-wide settings,
+  not per platform: if this Hermes also serves another chat platform, its turns there recall
+  nothing and keep nothing. The plugin logs a warning at every connect when another provider
+  is selected or Hermes's own memory is back on; run setup again to restore them.
+- **`uffici doctor` shows what reaches past Uffici.** At every connect the plugin tells the
+  companion, by name only, the other MCP servers this Hermes would start, the other platforms
+  its gateway connects, and the memory settings above that no longer hold — read through
+  Hermes's own configuration readers. The doctor prints them as `drift` lines. They are a
+  report, never a block: nothing about them stops a connection or a turn.
+- **`uffici doctor` shows whether this Hermes is one the plugin supports.** At every connect
+  the plugin also sends the Hermes versions it supports and its verdict on the running one;
+  the doctor prints them on its `harness` line. An unsupported Hermes still connects and
+  answers, and the plugin logs a warning when it connects.
+
+### Files
+
+The companion moves every file, in both directions, between your organization's Uffici
+files and one directory on this machine: the **workspace**, `uffici-workspace` inside the
+Hermes home. A transfer cut halfway resumes where it stopped, and no file ever passes
+through the model, a tool's answer or a log line — only paths, sizes and references do.
+
+- **A person's file arrives as a local file.** The plugin asks the companion to download a
+  turn's attachments, up to 25 MiB per turn, before Hermes sees the message. Each one reaches
+  Hermes the way its other platforms deliver media: an image (JPEG, PNG, WebP, GIF) the model
+  can see, and any other file as a document Hermes tells the agent to open with its own tools.
+  The message still names every attachment, with where it is on this machine. One that was
+  not downloaded — over the budget, or from earlier in the conversation — is named with the
+  reason, and the agent fetches it with `uffici_download` when it needs it.
+- **A file the agent makes arrives as an attachment.** When the agent puts a `MEDIA:` path in
+  its reply, as it would on any Hermes platform, the plugin uploads the file and the agent's
+  reply in Uffici carries it as an attachment. **Only a file inside the workspace is ever
+  sent**, and nothing is ever copied into it: a file anywhere else — including one Hermes's
+  own delivery policy allows, and a link in the workspace that leads out of it — is not
+  attached, and the reply says the file is not in the shared workspace. The agent saves what
+  it wants to send in the workspace first. Files Hermes's own tools write into Hermes's caches
+  (a generated image, for instance) are outside it too, and Hermes has no setting that moves
+  those caches; the agent saves a copy in the workspace. When a file cannot be attached —
+  outside the workspace, refused by Uffici, missing, too large — the reply says so, naming
+  the file and why: it never disappears.
+- **Two tools, in the `uffici` toolset**, while the companion carries files and your
+  organization lets the agent read files (`uffici_download`) or write them (`uffici_upload`):
+  `uffici_download` brings an attachment (by its id) or a file in Uffici Files (by its path)
+  into the workspace and answers where it landed; `uffici_upload` takes a file from the
+  workspace and attaches it to the agent's reply, or saves it in Uffici Files at a path the
+  agent chooses — replacing a file there asks a person first. Their paths on this side are
+  relative to the workspace. Uffici checks the agent's file permissions on every transfer.
+- **The workspace is a directory Hermes delivers files from — for this whole Hermes.** Setup
+  adds it to `gateway.media_delivery_allow_dirs`, so even Hermes's strict delivery policy
+  sends a file the agent saved there. That setting is Hermes-wide and setup replaces its list:
+  add your own directories after the workspace's entry.
 
 ## What it is not
 

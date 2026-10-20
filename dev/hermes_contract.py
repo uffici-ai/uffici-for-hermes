@@ -24,6 +24,30 @@ passed, so each is checked here against Hermes's own code:
   itself, offer the tool (directly or behind its tool-search bridge), dispatch the
   plugin's handler, bind the turn's chat id where the handler reads it, and remove a tool
   the plugin disposes.
+- **Uffici memory is Hermes's memory, and Hermes's own is off.** The plugin's directory
+  is the provider ``memory.provider`` names: Hermes's memory loader must find it there,
+  load it WITHOUT registering the platform a second time, and reach the adapter's prefetch
+  through the process-global rendezvous from its own copy of the package. The manifest's
+  keys must switch off MEMORY.md and USER.md (and with them the memory nudge). A prefetch
+  must land fenced on the user side before the call, unwrapped by the plugin, inside a
+  bound that is still the 8 s the plugin's deadline assumes, and its recall count must
+  become Hermes's status line (which the adapter never posts — pinned by its own suite).
+- **The hello's drift is Hermes's own reading of its configuration.** An MCP server
+  Hermes would start, a platform its gateway would connect besides Uffici, and Hermes's
+  own memory back on must each be reported, through Hermes's own readers — and the
+  configuration ``uffici setup`` writes must report none of them.
+- **A brief's freshness is Hermes's routing decision.** The plugin routes through the
+  store's own ``get_or_create_session`` and reads ``load_transcript`` on the session it
+  returns: a new conversation, a session ``/stop`` suspended and one whose row was ended
+  in ``state.db`` must each route to a session with no transcript (``fresh``), and a
+  session with turns must route to itself (``resumed``). And the Hermes this probe runs
+  in must be inside the range the plugin declares.
+- **Files cross in Hermes's own conventions.** A person's file reaches Hermes as a local
+  path in ``MessageEvent.media_urls`` with its type in ``media_types``; a file the agent
+  makes leaves through a ``MEDIA:`` tag ``extract_media`` takes out of the reply, which
+  Hermes's own delivery hands to the adapter's ``send_document`` / ``send_image_file`` —
+  never to the base class's failure notice. And the manifest makes the workspace a root
+  Hermes's strict delivery policy accepts.
 - **Hermes's own log lines reach a root handler.** The plugin ships them with one
   handler on the root logger: that works only while Hermes logs a turn through
   Python ``logging`` on a named logger that propagates, with the root at INFO or
@@ -44,6 +68,7 @@ from __future__ import annotations
 import inspect
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -403,6 +428,311 @@ def platform_tools_reach_the_model(factory, manifest: dict) -> str | None:
     return None
 
 
+#: Never a real fact: a marker the memory checks look for.
+MEMORY_CANARY = "uffici-memory-canary-5d1e"
+
+
+def memory_provider_is_the_plugin(factory, manifest: dict) -> str | None:
+    """Hermes's memory loader activates the plugin's directory as the provider, and the
+    provider copy reaches the gateway copy's adapter through the rendezvous."""
+    import threading
+
+    from agent.memory_provider import MemoryProvider
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import platform_registry
+    from gateway.session_context import set_session_vars
+    from plugins.memory import load_memory_provider
+
+    name = (configured(manifest).get("memory") or {}).get("provider")
+    adapter = factory(PlatformConfig(enabled=True))
+    package = sys.modules[type(adapter).__module__.rsplit(".", 1)[0]]
+    plugin_memory = sys.modules[f"{package.__name__}.memory"]
+    if name != plugin_memory.PROVIDER_DIRECTORY:
+        return f"the manifest selects memory provider {name!r}, not the plugin's directory"
+    before = platform_registry.get("uffici").adapter_factory
+    provider = load_memory_provider(name)
+    if not isinstance(provider, MemoryProvider) or provider.name != plugin_memory.PROVIDER_NAME:
+        return f"Hermes's memory loader did not activate the plugin as {name!r}"
+    if type(provider).__module__.split(".")[0] == package.__name__.split(".")[0]:
+        return "the provider was not loaded as Hermes's own copy; the rendezvous proves nothing"
+    if platform_registry.get("uffici").adapter_factory is not before:
+        return "loading the memory provider registered the uffici platform a second time"
+    if provider.get_tool_schemas() != [] or provider.system_prompt_block() != "":
+        return "the provider offers tools or a prompt block of its own"
+
+    from agent.memory_manager import MemoryManager
+
+    seen: dict[str, object] = {}
+
+    def bridge(conversation: str, query: str) -> tuple[str, int]:
+        seen["asked"] = (conversation, query)
+        return MEMORY_CANARY, 2
+
+    # 🔴 Through Hermes's OWN manager, from a turn's thread: the manager runs the prefetch
+    # on a thread of its own, so this is what proves the turn's session survives the hop
+    # (a provider called directly would prove only the probe's thread).
+    manager = MemoryManager()
+    manager.add_provider(provider)
+    plugin_memory.publish(bridge)
+    try:
+        def turn() -> None:
+            set_session_vars(platform="uffici", chat_id="probe-conversation")
+            seen["answer"] = manager.prefetch_all("what was decided?", session_id="probe")
+            seen["status"] = manager.describe_recall()
+
+        worker = threading.Thread(target=turn)
+        worker.start()
+        worker.join(timeout=30)
+    finally:
+        plugin_memory.withdraw(bridge)
+    if seen.get("asked") != ("probe-conversation", "what was decided?"):
+        return (
+            "a prefetch through Hermes's memory manager never reached the adapter for the "
+            "turn's conversation: the session is lost on its thread, or the rendezvous failed"
+        )
+    if MEMORY_CANARY not in str(seen.get("answer")):
+        return "Hermes's memory manager dropped the provider's recall"
+    if "Uffici" not in str(seen.get("status")) or "2" not in str(seen.get("status")):
+        return "the provider's recall count no longer becomes Hermes's status line"
+    return None
+
+
+def builtin_memory_is_off(manifest: dict) -> str | None:
+    """The manifest's keys switch off MEMORY.md and USER.md — and with no store, the memory
+    nudge has nothing to tick, so ``nudge_interval`` needs no key of its own."""
+    import agent.turn_context as turn_context
+    from tools.memory_tool import get_builtin_memory_store_flags
+
+    if get_builtin_memory_store_flags(configured(manifest)) != (False, False):
+        return "the manifest leaves Hermes's own MEMORY.md or USER.md on"
+    if get_builtin_memory_store_flags({}) != (True, True):
+        return "Hermes's built-in memory is no longer on by default; the check proves nothing"
+    if drifted := read_site(turn_context, "and agent._memory_store):"):
+        return drifted
+    agent = SimpleNamespace(
+        _memory_nudge_interval=1, valid_tool_names={"memory"}, _memory_store=None,
+        _turns_since_memory=5,
+    )
+    if turn_context._tick_memory_nudge(agent) is not False:  # noqa: SLF001
+        return "Hermes would nudge the agent toward a memory store that is off"
+    return None
+
+
+def prefetch_lands_fenced_on_the_user_side(factory) -> str | None:
+    """A prefetch rides the user message Hermes sends, inside its ``<memory-context>``
+    fence, never the system message — and the plugin's text needs no unwrapping."""
+    import agent.memory_manager as memory_manager
+    import agent.turn_context as turn_context
+    from gateway.config import PlatformConfig
+
+    adapter = factory(PlatformConfig(enabled=True))
+    package = type(adapter).__module__.rsplit(".", 1)[0]
+    plugin_memory = sys.modules[f"{package}.memory"]
+
+    if memory_manager._EXTERNAL_PREFETCH_TIMEOUT_S != plugin_memory.HERMES_PREFETCH_BOUND_SECONDS:  # noqa: SLF001
+        return (
+            f"Hermes bounds a prefetch at {memory_manager._EXTERNAL_PREFETCH_TIMEOUT_S}s, "  # noqa: SLF001
+            f"not the {plugin_memory.HERMES_PREFETCH_BOUND_SECONDS}s the plugin's deadline assumes"
+        )
+    # A real hit, from the wire's own golden — never a URN spelled here.
+    golden = (
+        Path(plugin_memory.__file__).parent / "wire" / "v1" / "golden" / "ops" / "valid"
+        / "memory.recall.result-levels.json"
+    )
+    hit = {**json.loads(golden.read_text())["hits"][0], "text": MEMORY_CANARY}
+    rendered, _count = plugin_memory.render_recall({"hits": [hit], "degraded": False})
+    if memory_manager.sanitize_context(rendered) != rendered:
+        return "Hermes strips something from the plugin's recall text: the plugin must not wrap it"
+    for line in (
+        "ext_prefetch_cache = agent._memory_manager.prefetch_all("
+        '_query, session_id=agent.session_id) or ""',
+        "agent._emit_status(_recall_indicator)",
+    ):
+        if drifted := read_site(turn_context, line):
+            return drifted
+    agent = SimpleNamespace(
+        ephemeral_system_prompt=None,
+        _current_turn_timestamp=0.0,
+        model="probe",
+        _copy_reasoning_content_for_api=lambda _msg, _api: None,
+        _should_sanitize_tool_calls=lambda: False,
+    )
+    messages = [{"role": "user", "content": "hello"}]
+    api_messages, _effective = turn_context.build_api_messages(
+        agent, messages, current_turn_user_idx=0, ext_prefetch_cache=rendered,
+        plugin_user_context=None, moa_config=None, active_system_prompt="the cached prompt",
+    )
+    users = [m for m in api_messages if m.get("role") == "user"]
+    systems = [m for m in api_messages if m.get("role") == "system"]
+    user_text = json.dumps(users)
+    if MEMORY_CANARY not in user_text or "<memory-context>" not in user_text:
+        return "a prefetch no longer reaches the user message, fenced, before the call"
+    if MEMORY_CANARY in json.dumps(systems):
+        return "a prefetch reached the system message"
+
+    return None
+
+
+#: The issue's fixture (#2406): over what setup writes, an extra MCP server (and a disabled
+#: one, which is not drift), a second platform the gateway would connect, and Hermes's own
+#: memory switched back on. The bot token is a shape Hermes accepts, never a real one.
+DRIFT_FIXTURE = {
+    "mcp_servers": {
+        "probe-extra": {"url": "https://example.invalid/mcp"},
+        "probe-disabled": {"command": "true", "enabled": False},
+    },
+    "gateway": {
+        "platforms": {
+            "uffici": {"enabled": True},
+            "telegram": {
+                "enabled": True,
+                "token": "1234567890:AAEprobeprobeprobeprobeprobeprobe",  # gitleaks:allow
+            },
+        }
+    },
+}
+
+
+def drift_reads_hermes_own_config(factory, manifest: dict) -> str | None:
+    """The plugin's drift reader, pointed at a Hermes home holding the fixture, reports
+    each kind through Hermes's OWN readers — and the setup's configuration reports none."""
+    import copy
+    import importlib
+    import tempfile
+
+    import yaml
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.memory_tool import get_builtin_memory_store_flags
+
+    package = factory.__module__.rsplit(".", 1)[0]
+    drift = importlib.import_module(f"{package}.drift")
+    clean = configured(manifest)
+    clean.setdefault("gateway", {}).setdefault("platforms", {})["uffici"] = {"enabled": True}
+    drifted = copy.deepcopy(clean)
+    drifted.update(copy.deepcopy(DRIFT_FIXTURE))
+    drifted["memory"]["memory_enabled"] = True
+
+    def read(config: dict) -> dict:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+            Path(home, "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+            token = set_hermes_home_override(home)
+            try:
+                return drift.read_drift("uffici")
+            finally:
+                reset_hermes_home_override(token)
+
+    # 🔴 A platform Hermes enables from its ENVIRONMENT is a live channel too (the e2e
+    # rig's image connects `api_server` that way), and no config file can switch it off —
+    # so the clean read is the baseline, and the fixture must add exactly `telegram`.
+    baseline = read(clean)
+    if baseline.get("mcpServers") != [] or baseline.get("localMemory") != []:
+        return f"the setup's own configuration read as drift: {baseline!r}"
+    if "channels" not in baseline:
+        return "Hermes's gateway configuration could not be read, so no channel was"
+    if "telegram" in baseline["channels"]:
+        return f"the baseline already connects telegram, so the check proves nothing: {baseline!r}"
+    report = read(drifted)
+    want = {
+        "mcpServers": ["probe-extra"],
+        "channels": sorted([*baseline["channels"], "telegram"]),
+        "localMemory": ["memory.memory_enabled"],
+    }
+    if report != want:
+        return f"the fixture's drift read as {report!r}, not {want!r}"
+    # The memory kind is the plugin's transcription of Hermes's switch: held to Hermes's.
+    provider = importlib.import_module(f"{package}.memory").PROVIDER_DIRECTORY
+    for config in (clean, drifted, {"memory": {"provider": provider}}):
+        on = get_builtin_memory_store_flags(config)
+        keys = drift.local_memory_keys(config)
+        if on != tuple(key in keys for key in drift.BUILTIN_STORE_KEYS):
+            return f"Hermes reads its own memory as {on}, the plugin as {keys!r}"
+    return None
+
+
+def freshness_is_hermes_routing(factory) -> str | None:
+    """The plugin's ``fresh`` / ``resumed`` against a REAL session store (#2414).
+
+    The suite's store double routes the way ``gateway/session.py`` does; this holds the
+    double to Hermes: each way Hermes replaces a session at routing must read ``fresh``,
+    and the session the plugin read must be the one the turn's own routing then lands on.
+    """
+    import asyncio
+    import importlib
+    import tempfile
+    import threading
+
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.session import SessionStore, build_session_key
+    from hermes_cli import __version__ as hermes_version
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    package = factory.__module__.rsplit(".", 1)[0]
+    support = importlib.import_module(f"{package}.support")
+    if support.harness_support(hermes_version).get("supported") is not True:
+        return (
+            f"the probe's Hermes {hermes_version} is outside the plugin's "
+            f"{support.SUPPORTED_RANGE}"
+        )
+
+    if "touch_activity" not in inspect.signature(SessionStore.get_or_create_session).parameters:
+        return "Hermes's routing call no longer takes touch_activity, which the plugin passes"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        token = set_hermes_home_override(home)
+        try:
+            store = SessionStore(Path(home, "sessions"), GatewayConfig())
+            # The plugin calls the store from a worker thread, as Hermes's own async facade
+            # does: that is safe only while the store guards its index with a thread lock.
+            if not isinstance(getattr(store, "_lock", None), type(threading.Lock())):
+                return "Hermes's session store no longer guards its index with a thread lock"
+            adapter = factory(PlatformConfig(enabled=True))
+            adapter.set_session_store(store)
+            source = adapter.build_source(chat_id="conv_probe", chat_type="dm")
+            key = build_session_key(source)
+
+            def fresh() -> bool:
+                return asyncio.run(adapter._session_is_fresh(source))  # noqa: SLF001
+
+            def a_turn() -> str:
+                session_id = store.get_or_create_session(source).session_id
+                for role in ("user", "assistant"):
+                    store.append_to_transcript(session_id, {"role": role, "content": "probe"})
+                return session_id
+
+            if not fresh():
+                return "a conversation Hermes has never seen read as resumed"
+            # The turn creates a new conversation's session, so Hermes still sees it as new
+            # (created_at == updated_at) and fires session:start.
+            if store.lookup_by_session_key(key) is not None:
+                return "the plugin's read created the session the turn should create"
+            ran = a_turn()
+            if fresh():
+                return "a session with turns read as fresh"
+            if store.get_or_create_session(source).session_id != ran:
+                return "a healthy session did not route to itself"
+            if not store.suspend_session(key):
+                return "Hermes could not suspend the probe's session"
+            if not fresh():
+                return "a session /stop suspended read as resumed"
+            entry = store.lookup_by_session_key(key)
+            replaced = entry.session_id
+            if replaced == ran:
+                return "Hermes did not replace the suspended session at routing"
+            # The turn's own new-session handling keys off this flag, which the plugin's
+            # routing must leave for it to consume.
+            if not getattr(entry, "was_auto_reset", False):
+                return "the replaced session lost was_auto_reset before the turn could act on it"
+            if store.get_or_create_session(source).session_id != replaced:
+                return "the turn's routing landed on another session than the one read"
+            ended = a_turn()
+            store._db_for_session_id(ended).end_session(ended, "session_reset")  # noqa: SLF001
+            if not fresh():
+                return "a session ended in state.db read as resumed"
+        finally:
+            reset_hermes_home_override(token)
+    return None
+
+
 def harness_logs_reach_a_root_handler(factory) -> str | None:
     """A turn's INFO line, from Hermes's own logger, reaches the plugin's root handler."""
     import logging
@@ -453,6 +783,139 @@ def _root_handler_verdict(factory, home: str, root) -> str | None:
     return None
 
 
+def media_reaches_the_adapters_hooks(factory) -> str | None:
+    """Files in and out, in Hermes's own conventions (#2674).
+
+    In: ``MessageEvent`` carries a file as a local path in ``media_urls`` with its MIME type
+    in ``media_types``, and reads ``media_text_inlined`` False as "tell the agent to open
+    it". Out: ``extract_media`` takes a ``MEDIA:<path>`` tag out of a reply, and Hermes's
+    own delivery hands a document to ``send_document`` and an image (through its batch) to
+    ``send_image_file`` — both the ADAPTER's, so the file becomes an attachment on the
+    reply instead of Hermes's failure notice. Run through Hermes's own delivery method with
+    the upload stubbed: the companion is not here, and the hooks are what is pinned.
+    """
+    import asyncio
+    import dataclasses
+    import importlib
+    import tempfile
+
+    import gateway.run_inbound as run_inbound
+    from gateway.config import PlatformConfig
+    from gateway.platforms import base
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.event import MessageEvent
+
+    fields = {field.name for field in dataclasses.fields(MessageEvent)}
+    if not {"media_urls", "media_types", "media_text_inlined"} <= fields:
+        return "Hermes's MessageEvent no longer carries media_urls / media_types"
+    if drifted := read_site(
+        run_inbound, "display_name, agent_path, mtype, content_inlined=inline_flag is not False,"
+    ):
+        return drifted
+    media, cleaned = BasePlatformAdapter.extract_media(
+        "Here is the report.\nMEDIA:/tmp/uffici-probe/report.pdf"
+    )
+    if media != [("/tmp/uffici-probe/report.pdf", False)] or "MEDIA:" in cleaned:
+        return f"extract_media no longer takes a MEDIA: tag out of a reply: {media!r}"
+    package = factory.__module__.rsplit(".", 1)[0]
+    files = importlib.import_module(f"{package}.files")
+    if files.HERMES_IMAGE_TYPES != base.SUPPORTED_IMAGE_DOCUMENT_TYPES:
+        return "the images Hermes shows a model are not the plugin's image table"
+    adapter = factory(PlatformConfig(enabled=True))
+    for name in ("send_document", "send_image_file"):
+        ours, theirs = getattr(type(adapter), name), getattr(BasePlatformAdapter, name)
+        if ours is theirs:
+            return f"the adapter does not override {name}: a delivered file is a failure notice"
+        wanted = inspect.signature(theirs).parameters
+        have = inspect.signature(ours).parameters
+        missing = [
+            p for p in wanted if p not in have and wanted[p].kind is not wanted[p].VAR_KEYWORD
+        ]
+        if missing:
+            return f"Hermes calls {name} with {missing}, which the adapter does not take"
+
+    delivered: list[tuple[str, str | None]] = []
+
+    async def attach(request_id: str, source: str, name: str | None = None):
+        delivered.append((Path(source).name, request_id))
+        return {"id": f"probe-{len(delivered)}", "name": Path(source).name, "ref": "r"}, None
+
+    adapter._files.attach = attach  # noqa: SLF001 — the upload, without a companion
+    adapter._open_request["probe"] = "probe-request"  # noqa: SLF001
+    results: list = []
+    with tempfile.TemporaryDirectory() as directory:
+        pdf, png = Path(directory, "report.pdf"), Path(directory, "chart.png")
+        pdf.write_bytes(b"%PDF-1.7")
+        png.write_bytes(b"\x89PNG")
+        event = SimpleNamespace(source=SimpleNamespace(chat_id="probe"))
+        asyncio.run(
+            adapter._deliver_media_attachments(  # noqa: SLF001 — Hermes's own delivery
+                event, [(str(pdf), False), (str(png), False)], [],
+                force_document_attachments=False, human_delay=0.0, metadata={},
+                record_delivery=results.append,
+            )
+        )
+    if sorted(delivered) != [("chart.png", "probe-request"), ("report.pdf", "probe-request")]:
+        return f"Hermes's delivery did not reach the adapter's hooks with both files: {delivered!r}"
+    if not all(getattr(result, "success", False) for result in results):
+        return "Hermes recorded a delivered file as failed"
+    outbox = adapter._outbox.get("probe-request") or {}  # noqa: SLF001
+    if len(outbox.get("attachments", [])) != 2:
+        return "the files Hermes delivered are not waiting for the request's post"
+    return None
+
+
+def workspace_is_a_media_root(manifest: dict) -> str | None:
+    """The manifest makes the workspace a root Hermes delivers media from (#2674).
+
+    ``uffici setup`` writes ``UFFICI_HERMES_MEDIA_DIR`` (the harness home and the manifest's
+    workspace) into Hermes's environment and sets ``gateway.media_delivery_allow_dirs`` to
+    a list naming it; Hermes expands ``${…}`` when it loads its configuration. Checked with
+    Hermes's STRICT policy, where only a root (or a fresh file) is delivered: an old file in
+    the workspace must be deliverable, and one beside it outside any root must not.
+    """
+    import os
+    import tempfile
+
+    import yaml
+    from gateway.platforms.base import validate_media_delivery_path
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    variable = "UFFICI_HERMES_MEDIA_DIR"
+    template = manifest.get("env", {}).get(variable)
+    if not template or not manifest.get("workspace"):
+        return "the manifest names no workspace for Hermes to deliver media from"
+    previous = os.environ.get(variable)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
+        media_dir = template.replace("${home}", home)
+        if Path(media_dir) != Path(home, manifest["workspace"]):
+            return f"{variable} is not the workspace the companion records: {template!r}"
+        Path(media_dir).mkdir(parents=True)
+        config = configured(manifest)
+        config.setdefault("gateway", {})["strict"] = True
+        Path(home, "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+        inside, outside = Path(media_dir, "made.pdf"), Path(home, "elsewhere.pdf")
+        for path in (inside, outside):
+            path.write_bytes(b"%PDF-1.7")
+            os.utime(path, (1, 1))
+        os.environ[variable] = media_dir
+        token = set_hermes_home_override(home)
+        try:
+            delivered_inside = validate_media_delivery_path(str(inside))
+            delivered_outside = validate_media_delivery_path(str(outside))
+        finally:
+            reset_hermes_home_override(token)
+            if previous is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = previous
+    if delivered_outside is not None:
+        return "strict policy delivered an old file outside every root: the probe proves nothing"
+    if delivered_inside is None:
+        return "Hermes would not deliver a file the agent saved in the Uffici workspace"
+    return None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("usage: python - <manifest json>", file=sys.stderr)
@@ -469,6 +932,13 @@ def main(argv: list[str]) -> int:
         ("harness logs", lambda: harness_logs_reach_a_root_handler(factory)),
         ("context slot", lambda: context_reaches_the_system_side_only(factory)),
         ("platform tools", lambda: platform_tools_reach_the_model(factory, manifest)),
+        ("memory provider", lambda: memory_provider_is_the_plugin(factory, manifest)),
+        ("built-in memory", lambda: builtin_memory_is_off(manifest)),
+        ("memory prefetch", lambda: prefetch_lands_fenced_on_the_user_side(factory)),
+        ("harness drift", lambda: drift_reads_hermes_own_config(factory, manifest)),
+        ("session freshness", lambda: freshness_is_hermes_routing(factory)),
+        ("media hooks", lambda: media_reaches_the_adapters_hooks(factory)),
+        ("media root", lambda: workspace_is_a_media_root(manifest)),
     ]
     for name, check in checks:
         failure = check()

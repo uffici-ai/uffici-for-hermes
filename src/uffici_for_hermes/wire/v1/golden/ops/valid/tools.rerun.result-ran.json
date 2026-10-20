@@ -1,0 +1,11 @@
+{
+  "callUrn": "urn:uffici:tool_call:43",
+  "result": {
+    "boards": [
+      {
+        "id": "b-1",
+        "name": "Support"
+      }
+    ]
+  }
+}

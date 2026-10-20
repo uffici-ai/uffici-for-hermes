@@ -32,6 +32,9 @@ gateway:
     # would make "did the turn come from Uffici?" a question.
     uffici:
       enabled: true
+  # The Uffici workspace is a media root (#2679), as the setup manifest writes it from
+  # `UFFICI_HERMES_MEDIA_DIR`: the pod mounts it here in Hermes, the companion and the mock.
+  media_delivery_allow_dirs: ["/opt/data/uffici-workspace"]
 
 # Interrupt rather than queue: a superseding ring should stop the turn in
 # flight, which is what the platform's own supersede expects to happen. Hermes
@@ -46,6 +49,14 @@ display:
   platforms:
     uffici:
       long_running_notifications: false
+
+# Uffici memory in place of Hermes's own, as the setup manifest writes it
+# (`uffici-plugin.json`): the provider is the plugin's DIRECTORY name, and Hermes's
+# MEMORY.md and USER.md are off — for every platform this Hermes serves.
+memory:
+  provider: uffici-for-hermes
+  memory_enabled: false
+  user_profile_enabled: false
 
 # 🔴 `approvals` is left at Hermes's own default, deliberately (#2164). When Hermes asks a
 # person to approve a command, the plugin answers DENY at once with a reason the agent

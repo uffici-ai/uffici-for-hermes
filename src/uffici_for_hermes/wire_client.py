@@ -162,9 +162,21 @@ def backoff_seconds(attempt: int) -> float:
 PROCESS_ID = uuid.uuid4().hex
 
 
-def plugin_hello(token: str, harness_version: str, plugin_version: str, budget_tokens: int) -> dict:
-    """The first frame, carrying the token."""
-    return {
+def plugin_hello(
+    token: str,
+    harness_version: str,
+    plugin_version: str,
+    budget_tokens: int,
+    drift: dict[str, list[str]] | None = None,
+    harness_support: dict[str, Any] | None = None,
+    capabilities: dict[str, Any] | None = None,
+) -> dict:
+    """The first frame, carrying the token — and, when the plugin read it, the harness's
+    drift from the plugin policy (#2406, ``drift.py``) and the Hermes versions this release
+    supports with its verdict on the running one (#2414, ``support.py``) — and what the
+    plugin asks the companion to do for its harness (``capabilities``, #2674): an older
+    companion ignores a field it does not know."""
+    hello = {
         "v": WIRE_VERSION,
         "type": "hello",
         "harness": "hermes",
@@ -174,6 +186,13 @@ def plugin_hello(token: str, harness_version: str, plugin_version: str, budget_t
         "contextBudgetTokens": budget_tokens,
         "processId": PROCESS_ID,
     }
+    if drift is not None:
+        hello["drift"] = drift
+    if harness_support is not None:
+        hello["harnessSupport"] = harness_support
+    if capabilities:
+        hello["capabilities"] = capabilities
+    return hello
 
 
 def describe_frame(frame: dict[str, Any]) -> dict[str, Any]:
@@ -232,6 +251,9 @@ class WireClient:
         plugin_version: str,
         budget_tokens: int,
         connect_fn: Callable[[WireAddress], Awaitable[Any]],
+        drift: Callable[[], Awaitable[dict[str, list[str]] | None]] | None = None,
+        harness_support: dict[str, Any] | None = None,
+        capabilities: dict[str, Any] | None = None,
         on_frame: Callable[[dict[str, Any]], Awaitable[None]],
         on_connected: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         on_disconnected: Callable[[], None] | None = None,
@@ -242,6 +264,9 @@ class WireClient:
         self._harness_version = harness_version
         self._plugin_version = plugin_version
         self._budget_tokens = budget_tokens
+        self._drift = drift
+        self._harness_support = harness_support
+        self._capabilities = capabilities
         self._connect_fn = connect_fn
         self._on_frame = on_frame
         self._on_connected = on_connected
@@ -303,6 +328,11 @@ class WireClient:
                 await connection.close()
 
     async def _one_connection(self) -> None:
+        # 🔴 Read for EACH hello — a reconnect after `uffici setup` fixed the harness must
+        # not repeat what the first connect read (#2406) — and BEFORE the dial: the
+        # companion claims its one plugin slot on accept, so a slow read after it would
+        # hold that slot unattached for as long as the read takes.
+        drift = await self._drift() if self._drift is not None else None
         connection = await self._connect_fn(self._address)
         self._connection = connection
         try:
@@ -311,6 +341,9 @@ class WireClient:
                 self._harness_version,
                 self._plugin_version,
                 self._budget_tokens,
+                drift,
+                self._harness_support,
+                self._capabilities,
             )
             await connection.send(encode_frame(hello))
             async for raw in connection:

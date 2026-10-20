@@ -13,7 +13,10 @@ inserted here would be an opinion nobody could audit.
 
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
+
+from .files import attachment_suffix
 
 #: A gap this long between entries earns a timestamp line. Below it the reading
 #: order is obvious and a timestamp per entry is noise the model pays for.
@@ -51,12 +54,18 @@ def _parse_at(value: Any) -> datetime | None:
         return None
 
 
-def _attachment_lines(entry: dict[str, Any]) -> list[str]:
+def _attachment_lines(
+    entry: dict[str, Any], workspace: Path | None = None, fetchable: bool = False
+) -> list[str]:
     """One reference line per attachment.
 
     By REFERENCE, never by content: an attachment is a path the agent's own
     tools open, and inlining it here would put a file's bytes into every turn
-    that merely mentions it.
+    that merely mentions it. 🔴 A file the companion prefetched (#2674) still gets
+    its line, naming where it is on this machine — Hermes also receives it as
+    media, and the line is what ties that file to the message that carried it.
+    One that was not is named with why and, when ``uffici_download`` is offered
+    (``fetchable``), how to fetch it.
     """
     out: list[str] = []
     for attachment in entry.get("attachments") or []:
@@ -65,11 +74,17 @@ def _attachment_lines(entry: dict[str, Any]) -> list[str]:
         name = str(attachment.get("name") or "").strip()
         ref = str(attachment.get("ref") or "").strip()
         if name or ref:
-            out.append(f"  [attachment] {name or ref}" + (f" — {ref}" if name and ref else ""))
+            out.append(
+                f"  [attachment] {name or ref}"
+                + (f" — {ref}" if name and ref else "")
+                + attachment_suffix(attachment, workspace, fetchable)
+            )
     return out
 
 
-def render_entry(entry: dict[str, Any]) -> list[str]:
+def render_entry(
+    entry: dict[str, Any], *, workspace: Path | None = None, fetchable: bool = False
+) -> list[str]:
     """One entry as the lines it contributes."""
     author = entry.get("author") or {}
     kind = str(entry.get("kind") or "").strip()
@@ -80,21 +95,35 @@ def render_entry(entry: dict[str, Any]) -> list[str]:
         # what an agent did; re-labelling it with an author would attribute the
         # tool's output to the person who triggered it.
         lines = [text] if text else []
+    elif kind == "summary":
+        # 🔴 Verbatim, every line, no label and no tag (#2451). A summary is the
+        # platform's own text standing for earlier messages, and its header line
+        # already says what it covers and how to read them (`read_conversation`
+        # with the segment it names) — so the plugin parses nothing in it. A label
+        # would attribute the platform's words to an author; a `[summary]` tag
+        # would repeat what the header says.
+        lines = text.split("\n") if text else []
     elif kind == "tombstone":
         lines = [f"{_label_for(author)}: {TOMBSTONE_LINE}"]
     elif kind == "message" or not kind:
         lines = [f"{_label_for(author)}: {text}"]
     else:
         # 🔴 An unknown kind is LABELLED, never dropped and never fatal
-        # (decision 44). Wave 4's summary kind must arrive with no version bump,
-        # and a reader that refused it would make that arrival a breaking change.
+        # (decision 44). A new kind must arrive with no version bump — `summary`
+        # did — and a reader that refused one would make it a breaking change.
         lines = [f"{_label_for(author)} [{kind}]: {text}"]
 
-    return [*lines, *_attachment_lines(entry)]
+    return [*lines, *_attachment_lines(entry, workspace, fetchable)]
 
 
-def render_entries(entries: Iterable[dict[str, Any]]) -> str:
-    """A run of entries as one block of text."""
+def render_entries(
+    entries: Iterable[dict[str, Any]],
+    *,
+    workspace: Path | None = None,
+    fetchable: bool = False,
+) -> str:
+    """A run of entries as one block of text. ``workspace`` is where the companion's
+    files are on this machine, and ``fetchable`` whether ``uffici_download`` is offered."""
     out: list[str] = []
     previous: datetime | None = None
     for entry in entries:
@@ -105,7 +134,7 @@ def render_entries(entries: Iterable[dict[str, Any]]) -> str:
             out.append(f"[{at.isoformat()}]")
         if at is not None:
             previous = at
-        out.extend(render_entry(entry))
+        out.extend(render_entry(entry, workspace=workspace, fetchable=fetchable))
     return "\n".join(out)
 
 
@@ -142,6 +171,39 @@ def render_reason(
                 break
             return f"[Uffici] You were woken because: {said} (by {_label_for(author)})."
     return f"[Uffici] You were woken because: {said}."
+
+
+#: The most levels a change line names — the wire's bound (``brief.contextChanged``).
+CONTEXT_CHANGES_MAX = 16
+
+
+def render_context_changed(changed: Any) -> str | None:
+    """The line saying the context changed since the agent last answered here.
+
+    A person edited what the agent is told in the middle of the conversation, so
+    the agent's earlier messages may contradict the context it reads now. Said on
+    the USER side, beside the reason — never in the system-side context, which
+    stays exactly what the platform composed — so the model follows the current
+    context and does not take the blame for an answer that was right when given.
+    ``None`` when nothing changed, the key is absent (an older companion) or
+    nothing in it is readable: then the turn says nothing.
+    """
+    if not isinstance(changed, list):
+        return None
+    names: list[str] = []
+    for level in changed[:CONTEXT_CHANGES_MAX]:
+        if not isinstance(level, dict):
+            continue
+        name = " ".join(str(level.get("name") or "").split())[:128]
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        return None
+    return (
+        f"[Uffici] The context changed since your last answer: {', '.join(names)}. "
+        "Follow the current context; where your earlier messages disagree with it, "
+        "the context changed — they were not mistakes."
+    )
 
 
 def cause_author(cause: dict[str, Any] | None, entries: Sequence[dict[str, Any]]) -> dict[str, Any]:

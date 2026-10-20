@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/tools.rerun.request.schema.json",
+  "title": "tools.rerun request",
+  "description": "plugin \u2192 companion, the payload of a `call` with op `tools.rerun`. Re-run a call the platform recorded, named by its `tool_call` URN, on the request the plugin is answering: the platform runs the recorded tool with the recorded arguments as a NEW call, through today's approvals. The companion refuses a request it did not ring (`not_permitted`) and never retries a call once sent: a tool is not idempotent.",
+  "type": "object",
+  "required": [
+    "requestId",
+    "call"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "call": {
+      "type": "string",
+      "pattern": "^urn:uffici:tool_call:[1-9][0-9]{0,17}$"
+    }
+  }
+}

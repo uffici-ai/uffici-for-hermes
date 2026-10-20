@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/memory.remember.request.schema.json",
+  "title": "memory.remember request",
+  "description": "plugin \u2192 companion, the payload of a `call` with op `memory.remember`. ONE fact about the work, written on the conversation the request belongs to \u2014 there is no level argument. Never retried once sent.",
+  "type": "object",
+  "required": [
+    "requestId",
+    "text"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    }
+  }
+}

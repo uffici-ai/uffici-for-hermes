@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/files.upload.request.schema.json",
+  "title": "files.upload request",
+  "description": "plugin → companion, the payload of a `call` with op `files.upload`. Upload one workspace file for the request the plugin is answering: attached to the agent's reply, or saved into the organization's Files at `to`. The companion reads only inside its workspace, refuses a request it did not ring (`not_permitted`) and sends the grant ask at most once.",
+  "type": "object",
+  "required": [
+    "requestId",
+    "localPath"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "localPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Relative to the workspace, or absolute and inside it."
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "A path in the organization's Files to save the file at, instead of attaching it to the reply."
+    },
+    "overwrite": {
+      "type": "boolean",
+      "description": "Replace a file already at `to`. A change to existing work: it asks a person first."
+    }
+  }
+}

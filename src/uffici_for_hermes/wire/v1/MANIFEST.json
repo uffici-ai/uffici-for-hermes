@@ -18,19 +18,19 @@
   ],
   "validGoldensByFrame": {
     "ack": 4,
-    "brief": 5,
+    "brief": 7,
     "call": 2,
     "cancel": 4,
     "done": 4,
-    "hello": 4,
-    "opener": 1,
-    "post": 2,
+    "hello": 8,
+    "opener": 2,
+    "post": 3,
     "ready": 1,
     "release": 3,
     "result": 3
   },
   "invalidGoldensByCloseReason": {
-    "malformed_frame": 17,
+    "malformed_frame": 24,
     "unsupported_version": 2
   },
   "invalidGoldensByCallDisposition": {
@@ -39,8 +39,8 @@
   },
   "totals": {
     "schemas": 13,
-    "valid": 33,
-    "invalid": 21
+    "valid": 41,
+    "invalid": 28
   },
   "ops": {
     "logs.push": {
@@ -65,6 +65,62 @@
         "result"
       ],
       "validGoldens": 3,
+      "invalidGoldens": 2
+    },
+    "tools.rerun": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 3,
+      "invalidGoldens": 1
+    },
+    "memory.recall": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 3,
+      "invalidGoldens": 2
+    },
+    "memory.remember": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 2,
+      "invalidGoldens": 1
+    },
+    "memory.forget": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 2,
+      "invalidGoldens": 1
+    },
+    "memory.unfold": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 3,
+      "invalidGoldens": 1
+    },
+    "files.download": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 3,
+      "invalidGoldens": 2
+    },
+    "files.upload": {
+      "schemas": [
+        "request",
+        "result"
+      ],
+      "validGoldens": 4,
       "invalidGoldens": 2
     }
   },

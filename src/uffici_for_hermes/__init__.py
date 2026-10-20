@@ -1,7 +1,9 @@
 """The Uffici platform adapter for the Hermes agent harness.
 
 Hermes loads this package through the ``hermes_agent.plugins`` entry point and
-calls :func:`register`, which registers the ``uffici`` platform.
+calls :func:`register`, which registers the ``uffici`` platform. The same directory is
+the ``uffici-for-hermes`` memory provider (``memory.provider``): Hermes's memory loader
+finds it by the words ``MemoryProvider`` in this file and calls :func:`register` again.
 
 🔴 ``register`` is imported LAZILY, in the function, and never at module scope.
 This module is imported by the platform's own checks and by tests that have no
@@ -27,7 +29,16 @@ __all__ = ["DEV_VERSION", "PLATFORM_NAME", "PLUGIN_NAME", "register", "version"]
 
 
 def register(ctx: object) -> None:
-    """The plugin entry point Hermes calls at startup."""
+    """The plugin entry point Hermes calls — at startup for the platform, and again from
+    its memory loader, which hands a ``MemoryProvider`` collector instead of a plugin
+    context. That second call registers ``UfficiMemoryProvider`` and nothing else: the
+    platform is already registered, from the copy of this package the gateway loaded.
+    """
+    from .memory import build_provider, is_memory_collector
+
+    if is_memory_collector(ctx):
+        ctx.register_memory_provider(build_provider())  # type: ignore[attr-defined]
+        return
     from .adapter import register as _register
 
     _register(ctx)

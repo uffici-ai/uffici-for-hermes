@@ -26,6 +26,9 @@ gateway:
   platforms:
     uffici:
       enabled: true
+  # The Uffici workspace is a media root (#2679), as the setup manifest writes it from
+  # `UFFICI_HERMES_MEDIA_DIR`: the pod mounts it here in Hermes, the companion and the mock.
+  media_delivery_allow_dirs: ["/opt/data/uffici-workspace"]
 
 # Under `display`, where Hermes reads it — never `gateway` (#2193).
 display:
@@ -36,6 +39,14 @@ display:
   platforms:
     uffici:
       long_running_notifications: false
+
+# Uffici memory in place of Hermes's own, as the setup manifest writes it
+# (`uffici-plugin.json`): the provider is the plugin's DIRECTORY name, and Hermes's
+# MEMORY.md and USER.md are off — for every platform this Hermes serves.
+memory:
+  provider: uffici-for-hermes
+  memory_enabled: false
+  user_profile_enabled: false
 
 # 🔴 `approvals` is left at Hermes's own default, deliberately (#2164). When Hermes asks a
 # person to approve a command, the plugin answers DENY at once with a reason the agent
@@ -67,6 +78,11 @@ model:
   # minimum 64,000 required"), and posts that error as the reply — 32,000 turned a
   # whole CI run into errored turns that every `nonEmpty` expectation accepted.
   context_length: 128000
+  # 🔴 The mock "sees" images (#2679): Hermes cannot look it up, so without this it routes
+  # an image to `vision_analyze` as text and the PNG never reaches the model as an image
+  # part — the mock reads the part's bytes for the canary. Inside the model block, where
+  # the two configs are meant to differ: the real model is not a vision model.
+  supports_vision: true
 
 providers:
   modelmock:

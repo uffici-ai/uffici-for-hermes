@@ -1,0 +1,46 @@
+{
+  "v": 1,
+  "type": "opener",
+  "requestId": "req_01J8ZQ7X4K2M9P0Q",
+  "entries": [
+    {
+      "id": "42",
+      "cursor": "42",
+      "at": "2026-09-03T17:20:00Z",
+      "author": {
+        "type": "system",
+        "id": "platform",
+        "label": "",
+        "self": false
+      },
+      "kind": "summary",
+      "text": "Summary of 37 earlier messages (2026-09-01 – 2026-09-03). To read them: read_conversation with segment \"urn:uffici:segment:42\".\nAna asked for the Lisbon invoice to be checked.\nSmith found it unpaid and wrote to the client."
+    },
+    {
+      "id": "61",
+      "cursor": "61",
+      "at": "2026-09-10T11:05:00Z",
+      "author": {
+        "type": "system",
+        "id": "platform",
+        "label": "",
+        "self": false
+      },
+      "kind": "summary",
+      "text": "12 earlier messages are not shown here (not summarized yet); read them with read_conversation."
+    },
+    {
+      "id": "entry_62",
+      "cursor": "62",
+      "at": "2026-09-17T14:01:00Z",
+      "author": {
+        "type": "member",
+        "id": "member_1",
+        "label": "Ana Marques",
+        "self": false
+      },
+      "kind": "message",
+      "text": "Did the Lisbon client answer?"
+    }
+  ]
+}

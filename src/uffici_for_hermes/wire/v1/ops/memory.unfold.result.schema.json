@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/memory.unfold.result.schema.json",
+  "title": "memory.unfold result",
+  "description": "companion \u2192 plugin, the payload of the `result` answering a `memory.unfold`. `supersededBy` is null, a URN this conversation can see, or `{visible: false}` \u2014 superseded by something it cannot see. Each row names its LEVEL, never a folder.",
+  "type": "object",
+  "required": [
+    "urn",
+    "supersededBy",
+    "rows"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "urn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "supersededBy": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "visible",
+            "urn"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "visible": {
+              "const": true
+            },
+            "urn": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "visible"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "visible": {
+              "const": false
+            }
+          }
+        }
+      ]
+    },
+    "rows": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": [
+          "urn",
+          "level",
+          "text",
+          "at",
+          "depth",
+          "supersededKind",
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "urn": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "folder",
+              "organization"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2
+          },
+          "supersededKind": {
+            "type": "string",
+            "enum": [
+              "revision",
+              "synthesis"
+            ]
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "remembered",
+                      "member_written"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

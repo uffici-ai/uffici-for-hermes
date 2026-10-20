@@ -831,3 +831,217 @@ def test_the_plugin_observes_hermess_tool_calls_and_hands_its_context_to_the_ada
     adapter._companion_features = frozenset({"tools"})  # noqa: SLF001
     adapter._tools.apply(catalog_entries(BOARDS) or {})  # noqa: SLF001
     assert set(ctx.registry.tools) == {"list_boards", "delete_board"}
+
+
+# ------------------------------------------------------------------ the re-run (#2454)
+
+RERAN = op_golden("tools.rerun.result-ran")
+RERUN_UNAVAILABLE = op_golden("tools.rerun.result-unavailable")
+RERUN_REQUEST = op_golden("tools.rerun.request-basic")
+CALL_URN = RERUN_REQUEST["call"]
+
+
+def rerun_for(
+    *, enabled: bool = True, rerun: bool = True, tunnel: Tunnel | None = None, ledger=None
+) -> tuple[PlatformTools, Registry, Tunnel]:
+    registry = Registry()
+    tunnel = tunnel or Tunnel({"tools.rerun": CallResult(call_id="c", payload=RERAN)})
+    tools = PlatformTools(
+        registry.register_tool,
+        call=tunnel.call,
+        request_for=({"conv-1": "req-1"} if ledger is None else ledger).get,
+        enabled=lambda: enabled,
+        rerun_enabled=lambda: rerun,
+    )
+    return tools, registry, tunnel
+
+
+def test_the_rerun_tool_is_one_fixed_tool_in_the_uffici_toolset() -> None:
+    tools, registry, _ = rerun_for()
+    tools.sync_rerun()
+    tools.sync_rerun()  # a second hello registers nothing twice
+    assert [c["name"] for c in registry.calls] == [pt.RERUN_TOOL] and tools.rerun_offered
+    registered = registry.tools[pt.RERUN_TOOL]
+    assert registered["toolset"] == TOOLSET and registered["schema"] == pt.RERUN_SCHEMA
+    parameters = pt.RERUN_SCHEMA["parameters"]
+    assert parameters["required"] == ["call"] and parameters["additionalProperties"] is False
+    description = pt.RERUN_SCHEMA["description"]
+    assert "tool_call URN" in description and "a call that needs approval asks again" in description
+    # 🔴 A re-run is for reads (#2474): the platform refuses a call that changed something.
+    assert "A call that changed something is never re-run" in description
+    # 🔴 `recall_tool_result` stays reserved: never registered by this plugin.
+    assert "recall_tool_result" not in registry.tools
+
+
+def test_the_rerun_tool_is_withdrawn_when_the_companion_stops_carrying_it() -> None:
+    carried = {"on": True}
+    registry = Registry()
+    tools = PlatformTools(
+        registry.register_tool,
+        call=Tunnel().call,
+        request_for={}.get,
+        enabled=lambda: True,
+        rerun_enabled=lambda: carried["on"],
+    )
+    tools.sync_rerun()
+    handle = tools._rerun_handle  # noqa: SLF001
+    carried["on"] = False
+    tools.sync_rerun()
+    assert handle.disposed and pt.RERUN_TOOL not in registry.tools and not tools.rerun_offered
+    tools.sync_rerun()  # nothing left to withdraw
+
+
+def test_a_rerun_tool_hermes_refuses_is_not_offered() -> None:
+    registry = Registry(taken={pt.RERUN_TOOL})
+    tools = PlatformTools(
+        registry.register_tool,
+        call=Tunnel().call,
+        request_for={}.get,
+        enabled=lambda: True,
+        rerun_enabled=lambda: True,
+    )
+    tools.sync_rerun()
+    assert not tools.rerun_offered
+
+    def boom(**_: Any) -> None:
+        raise RuntimeError("no")
+
+    raising = PlatformTools(
+        boom,
+        call=Tunnel().call,
+        request_for={}.get,
+        enabled=lambda: True,
+        rerun_enabled=lambda: True,
+    )
+    raising.sync_rerun()
+    assert not raising.rerun_offered
+    PlatformTools(None, call=Tunnel().call, request_for={}.get, enabled=lambda: True).sync_rerun()
+
+
+def test_a_dispose_that_raises_still_withdraws_the_rerun_tool() -> None:
+    carried = {"on": True}
+
+    class Raising:
+        def dispose(self) -> None:
+            raise RuntimeError("no")
+
+    tools = PlatformTools(
+        lambda **_: Raising(),
+        call=Tunnel().call,
+        request_for={}.get,
+        enabled=lambda: True,
+        rerun_enabled=lambda: carried["on"],
+    )
+    tools.sync_rerun()
+    carried["on"] = False
+    tools.sync_rerun()
+    assert not tools.rerun_offered
+
+
+def test_a_rerun_goes_out_on_the_conversations_open_request_and_is_cited() -> None:
+    tools, _, tunnel = rerun_for()
+    out = asyncio.run(tools.rerun("conv-1", {"call": f" {CALL_URN} "}))
+    assert tunnel.calls == [("tools.rerun", {"requestId": "req-1", "call": CALL_URN})]
+    assert json.loads(out) == {"callUrn": RERAN["callUrn"], "result": RERAN["result"]}
+    assert tools.take_extras("req-1") == {"citations": [RERAN["callUrn"]]}
+
+
+def test_the_rerun_payload_is_the_wires_request() -> None:
+    """🔴 Cross-layer pin: what the plugin sends validates against its own copy of the op's
+    request schema — the keys, and the URN against the schema's own pattern."""
+    import re
+
+    tools, _, tunnel = rerun_for()
+    asyncio.run(tools.rerun("conv-1", {"call": CALL_URN}))
+    _, payload = tunnel.calls[0]
+    schema = json.loads((WIRE_V1 / "ops" / "tools.rerun.request.schema.json").read_text())
+    assert set(payload) == set(schema["properties"]) == set(schema["required"])
+    assert re.fullmatch(schema["properties"]["call"]["pattern"], payload["call"])
+    assert payload["call"] == RERUN_REQUEST["call"]
+
+
+def test_a_rerun_that_cannot_run_is_a_result_and_cites_nothing() -> None:
+    answer = CallResult(call_id="c", payload=RERUN_UNAVAILABLE)
+    tools, _, _ = rerun_for(tunnel=Tunnel({"tools.rerun": answer}))
+    out = json.loads(asyncio.run(tools.rerun("conv-1", {"call": CALL_URN})))
+    assert out == {"callUrn": None, "result": RERUN_UNAVAILABLE["result"]}
+    assert out["result"]["error"] == "rerun_unavailable"
+    assert tools.take_extras("req-1") == {}
+
+
+@pytest.mark.parametrize("conversation", [None, "conv-without-a-request"])
+def test_a_rerun_outside_a_request_is_refused_without_the_tunnel(conversation) -> None:
+    tools, _, tunnel = rerun_for()
+    out = json.loads(asyncio.run(tools.rerun(conversation, {"call": CALL_URN})))
+    assert out == {"error": OUTSIDE_A_REQUEST} and tunnel.calls == []
+
+
+@pytest.mark.parametrize("enabled,rerun", [(False, True), (True, False)])
+def test_a_companion_without_both_features_is_never_asked_to_rerun(enabled, rerun) -> None:
+    tools, _, tunnel = rerun_for(enabled=enabled, rerun=rerun)
+    out = json.loads(asyncio.run(tools.rerun("conv-1", {"call": CALL_URN})))
+    assert out["errorClass"] == "unknown_op" and tunnel.calls == []
+
+
+@pytest.mark.parametrize("args", [{}, {"call": ""}, {"call": 42}, ["not", "an", "object"]])
+def test_a_rerun_without_a_call_is_malformed_before_the_tunnel(args: Any) -> None:
+    tools, _, tunnel = rerun_for()
+    out = json.loads(asyncio.run(tools.rerun("conv-1", args)))
+    assert out["errorClass"] == "malformed_payload" and tunnel.calls == []
+
+
+def test_a_failed_rerun_relays_its_instruction() -> None:
+    failed = CallResult(call_id="c", error_class="upstream_failed", instruction="No such call.")
+    tools, _, _ = rerun_for(tunnel=Tunnel({"tools.rerun": failed}))
+    out = json.loads(asyncio.run(tools.rerun("conv-1", {"call": CALL_URN})))
+    assert out == {"error": "No such call.", "errorClass": "upstream_failed"}
+
+
+@pytest.mark.parametrize("payload", [{"callUrn": None}, {"callUrn": 7, "result": {}}])
+def test_a_rerun_result_outside_the_wire_is_malformed(payload: dict) -> None:
+    answer = CallResult(call_id="c", payload=payload)
+    tools, _, _ = rerun_for(tunnel=Tunnel({"tools.rerun": answer}))
+    out = json.loads(asyncio.run(tools.rerun("conv-1", {"call": CALL_URN})))
+    assert out["errorClass"] == "malformed_payload"
+
+
+def test_the_registered_rerun_handler_runs_in_the_turns_thread(caplog) -> None:
+    tools, registry, tunnel = rerun_for(ledger={"conv-a": "req-a"})
+    tools.sync_rerun()
+    handler = registry.tools[pt.RERUN_TOOL]["handler"]
+    with caplog.at_level("INFO"), Loop() as loop:
+        tools.bind_loop(loop)
+        out = in_turn("uffici", "conv-a", lambda: handler({"call": CALL_URN}))
+    assert tunnel.calls[0][1] == {"requestId": "req-a", "call": CALL_URN}
+    assert json.loads(out)["callUrn"] == RERAN["callUrn"]
+    # 🔴 Never the result in a log line.
+    assert "Support" not in caplog.text and "boards" not in caplog.text
+
+
+def test_the_rerun_tool_is_not_reported_as_hermess_own_activity() -> None:
+    tools, _, _ = rerun_for(ledger={"conv-a": "req-a"})
+    with Loop() as loop:
+        tools.bind_loop(loop)
+        in_turn("uffici", "conv-a", lambda: tools.on_tool_called(pt.RERUN_TOOL, "ok"))
+    assert tools.take_extras("req-a") == {}
+
+
+def test_the_companions_hello_decides_whether_the_rerun_tool_is_offered() -> None:
+    registry = Registry()
+    ctx = type("Ctx", (), {"register_tool": registry.register_tool})()
+    adapter = UfficiAdapter(PlatformConfig(enabled=True), get_env=lambda _: None, plugin_ctx=ctx)
+
+    async def hello(features: list[str]) -> None:
+        await adapter._on_companion_hello({"v": 1, "type": "hello", "features": features})  # noqa: SLF001
+        runner = adapter._ready_runner  # noqa: SLF001
+        if runner is not None:
+            runner.cancel()
+
+    async def scenario() -> list[bool]:
+        seen = []
+        for features in (["tools", "rerun"], ["tools"], ["rerun"], ["tools", "rerun"]):
+            await hello(features)
+            seen.append(pt.RERUN_TOOL in registry.tools)
+        return seen
+
+    assert asyncio.run(scenario()) == [True, False, False, True]

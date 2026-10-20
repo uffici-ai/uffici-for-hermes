@@ -1,0 +1,18 @@
+{
+  "hits": [
+    {
+      "urn": "urn:uffici:fact:9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "level": "folder",
+      "distance": null,
+      "text": "The Porto warehouse closes at 18:00.",
+      "at": "2026-10-04T10:00:00.000Z",
+      "source": {
+        "kind": "member_written"
+      }
+    }
+  ],
+  "degraded": true,
+  "missing": [
+    "embeddings"
+  ]
+}

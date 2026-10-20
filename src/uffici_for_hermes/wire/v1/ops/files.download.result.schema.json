@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/wire/v1/ops/files.download.result.schema.json",
+  "title": "files.download result",
+  "description": "companion → plugin, the payload of the `result` answering a `files.download`: where the file now is, relative to the workspace the companion's hello names, its size in bytes and its type. The bytes never ride the wire.",
+  "type": "object",
+  "required": [
+    "localPath",
+    "size",
+    "contentType"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "localPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Relative to the workspace, with forward slashes: `conversations/<conversationId>/<attachmentId>-<name>` for an attachment, `files/<path>` for a Files path."
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "contentType": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 127,
+      "pattern": "^[\\w.+-]+/[\\w.+-]+$"
+    }
+  }
+}

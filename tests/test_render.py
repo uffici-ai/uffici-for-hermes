@@ -12,6 +12,7 @@ import pytest
 from uffici_for_hermes.render import (
     TOMBSTONE_LINE,
     cause_author,
+    render_context_changed,
     render_entries,
     render_entry,
     render_reason,
@@ -65,19 +66,50 @@ def test_a_tombstone_says_something_was_withdrawn() -> None:
 def test_an_unknown_kind_is_labelled_rather_than_dropped() -> None:
     """🔴 Decision 44 and the wire's forward-compatibility requirement.
 
-    Wave 4's ``summary`` kind must arrive with no version bump. A reader that
-    dropped an unknown kind would lose it silently; one that raised would make
-    that arrival a breaking change.
+    A kind this reader has never met must arrive with no version bump — the way
+    ``summary`` did. A reader that dropped an unknown kind would lose it
+    silently; one that raised would make that arrival a breaking change.
     """
+    entry = golden("brief-forward-compatible")["delta"][0]
+    assert entry["kind"] not in {"message", "tool_line", "tombstone", "summary"}
+    assert render_entry(entry) == ["Ana Marques [note]: Earlier: the invoice was approved."]
+
+
+def test_a_summary_is_the_platforms_text_verbatim_with_no_label() -> None:
+    """🔴 #2451: the platform's header line already says what the entry is and how
+    to read what it stands for. A label would attribute the platform's own text to
+    an author, and a ``[summary]`` tag would say twice what the header says once.
+    """
+    summary = golden("opener-with-summaries")["entries"][0]
+    assert summary["kind"] == "summary"
+    assert render_entry(summary) == summary["text"].split("\n")
+    assert len(render_entry(summary)) == 3, "every line of the summary, the header first"
+
+
+def test_an_opener_shows_its_summaries_in_order_before_the_tail() -> None:
+    entries = golden("opener-with-summaries")["entries"]
+    first, gap, tail = entries
+    rendered = render_entries(entries).split("\n")
+    header = first["text"].split("\n")[0]
+    assert rendered.index(header) < rendered.index(gap["text"])
+    tail_line = "Ana Marques: Did the Lisbon client answer?"
+    assert rendered.index(gap["text"]) < rendered.index(tail_line)
+    for line in first["text"].split("\n"):
+        assert line in rendered
+    assert not any("[summary]" in line for line in rendered)
+    assert tail["kind"] == "message"
+
+
+def test_an_empty_summary_contributes_no_line() -> None:
     entry = {
-        "id": "e9",
-        "cursor": "c9",
+        "id": "9",
+        "cursor": "9",
         "at": "2026-09-17T14:01:00Z",
         "kind": "summary",
-        "text": "Earlier: the invoice was approved.",
-        "author": {"type": "system", "id": "sys", "label": "Uffici", "self": False},
+        "text": "",
+        "author": {"type": "system", "id": "platform", "label": "", "self": False},
     }
-    assert render_entry(entry) == ["Uffici [summary]: Earlier: the invoice was approved."]
+    assert render_entry(entry) == []
 
 
 def test_an_attachment_is_a_reference_line_never_its_content() -> None:
@@ -214,3 +246,19 @@ def test_the_sender_is_the_causes_author_not_the_last_human() -> None:
 def test_a_cause_outside_the_delta_still_yields_its_author_id() -> None:
     author = cause_author({"entryId": "gone", "authorId": "m9"}, [])
     assert author["id"] == "m9"
+
+
+def test_a_changed_context_names_each_level_once_and_says_the_earlier_answers_were_right() -> None:
+    line = render_context_changed(golden("brief-context-changed")["contextChanged"])
+    assert line is not None
+    assert line.startswith("[Uffici] The context changed since your last answer: Clients.")
+    assert "not mistakes" in line
+    flattened = render_context_changed(
+        [{"name": "Dev\n  ops", "scope": "folder"}, {"name": "Dev ops", "scope": "folder"}]
+    )
+    assert flattened is not None and ": Dev ops." in flattened
+
+
+@pytest.mark.parametrize("changed", [None, [], "Clients", [{}], [{"name": "  "}]])
+def test_nothing_changed_or_nothing_readable_says_nothing(changed: object) -> None:
+    assert render_context_changed(changed) is None

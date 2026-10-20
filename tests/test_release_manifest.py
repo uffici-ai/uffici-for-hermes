@@ -54,11 +54,23 @@ def test_plugin_dir_is_relative_and_named_after_the_plugin() -> None:
     )
 
 
+#: The variables the manifest writes for HERMES to read, not the plugin: each is named, as
+#: ``${NAME}``, in a configuration value the manifest sets (Hermes expands ``${…}`` in its
+#: configuration when it loads it).
+HERMES_READ_ENV = {"UFFICI_HERMES_MEDIA_DIR"}
+
+
 def test_every_env_the_manifest_writes_is_one_the_plugin_reads() -> None:
     manifest = _manifest()
     source = WIRE_CLIENT.read_text(encoding="utf-8")
     for name, template in manifest["env"].items():
         assert name.startswith("UFFICI_"), name
+        if name in HERMES_READ_ENV:
+            values = [entry["value"] for entry in manifest["config"]]
+            assert any(f"${{{name}}}" in value for value in values), (
+                f"{name} is written for Hermes but no configuration value reads it"
+            )
+            continue
         assert f'"{name}"' in source, (
             f"{name} is written by the installer but read nowhere in wire_client.py"
         )
@@ -113,6 +125,27 @@ def test_the_uffici_toolset_is_left_to_hermess_own_default() -> None:
     ]
 
 
+def test_the_workspace_is_a_root_hermes_delivers_media_from() -> None:
+    """🔴 #2674: the manifest names the workspace (inside Hermes's home, recorded by
+    ``uffici setup`` for the companion) and makes it one of Hermes's media roots, so a file
+    the agent saves there is delivered even under Hermes's strict delivery policy.
+
+    The pinned Hermes takes its roots from ``gateway.media_delivery_allow_dirs`` — a LIST,
+    refused as a plain string by ``hermes config set`` — and expands ``${VAR}`` in its
+    configuration when it loads it. A config value cannot name the harness home, so the
+    path rides an environment variable the companion renders from ``${home}`` and the
+    manifest's own workspace: the same path the companion records, by construction.
+    ``dev/hermes_contract.py`` checks the whole chain against the real Hermes."""
+    manifest = _manifest()
+    workspace = manifest["workspace"]
+    assert re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*", workspace)
+    assert manifest["env"]["UFFICI_HERMES_MEDIA_DIR"] == "${home}/" + workspace
+    keys = {entry["key"]: entry for entry in manifest["config"]}
+    root = keys["gateway.media_delivery_allow_dirs"]
+    assert json.loads(root["value"]) == ["${UFFICI_HERMES_MEDIA_DIR}"]
+    assert "every platform" in root["note"], "a Hermes-wide key says so (the schema's note)"
+
+
 def test_upgrade_restarts_hermes_only_through_its_own_service() -> None:
     """`uffici upgrade` runs `restartCommand` only when `restartService` names a
     unit that exists (#2250): without a service, `hermes gateway restart` runs the
@@ -136,6 +169,7 @@ def test_manifest_carries_only_fields_the_companion_schema_knows() -> None:
         "name",
         "version",
         "pluginDir",
+        "workspace",
         "homeEnv",
         "defaultHome",
         "enable",

@@ -66,6 +66,35 @@
       },
       "description": "The `callUrn`s of the agent's own tool calls this answer rests on. Sent only to a companion whose hello lists the `tools` feature; the platform refuses a citation of anyone else's call."
     },
+    "attachments": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "Files this post carries, each as a `files.upload` without `to` answered it (`id`, `name`, `ref`) on the same request. By reference: the bytes were uploaded before the post. Sent only to a companion whose hello lists the `files` feature; the platform refuses an attachment it did not record for this request.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "ref"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
     "activity": {
       "type": "array",
       "maxItems": 20,

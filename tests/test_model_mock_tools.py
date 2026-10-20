@@ -173,6 +173,60 @@ def test_a_result_in_parts_is_read_too(mock_server: subprocess.Popen) -> None:
     assert "Support" in json.loads(raw)["choices"][0]["message"]["content"]
 
 
+#: A refused call, as the plugin hands it back: no call was made, and the platform's result
+#: carries the sentence the agent relays.
+REFUSED = json.dumps(
+    {
+        "callUrn": None,
+        "result": {
+            "ok": False,
+            "status": 403,
+            "error": "scope_missing",
+            "tool": "list_boards",
+            "scope": "boards.read",
+            "message": (
+                "This agent has no access to do this anywhere in this organization, so nothing "
+                "ran; tell the person, and an admin of this organization can grant this agent "
+                "access."
+            ),
+        },
+    },
+    ensure_ascii=False,
+)
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_refused_result_is_relayed_with_its_sentence(
+    mock_server: subprocess.Popen, stream: bool
+) -> None:
+    """A failed result is answered from like any other: the refusal and its sentence reach
+    the reply, so a scripted run can tell a refused call from one that ran."""
+    raw = ask(resumed(REFUSED), stream=stream, tools=DIRECT)
+    if stream:
+        assert '"tool_calls"' not in raw, "the model called the tool again"
+        content = "".join(
+            json.loads(line[len("data: ") :])["choices"][0]["delta"].get("content") or ""
+            for line in raw.split("\n")
+            if line.startswith("data: ") and line != "data: [DONE]"
+        )
+    else:
+        content = json.loads(raw)["choices"][0]["message"]["content"]
+    assert content.startswith("[mock] the tool said: ")
+    assert "scope_missing" in content
+    assert "This agent has no access to do this anywhere in this organization" in content
+
+
+def test_a_narrowed_result_keeps_its_flag_in_the_reply(mock_server: subprocess.Popen) -> None:
+    """A list answered under a narrower place says so, and the reply quotes it."""
+    narrowed = json.dumps(
+        {"callUrn": "urn:uffici:tool_call:2", "result": {"boards": [], "narrowed": True}}
+    )
+    content = json.loads(ask(resumed(narrowed), stream=False, tools=DIRECT))["choices"][0][
+        "message"
+    ]["content"]
+    assert '"narrowed": true' in content
+
+
 def test_a_clarify_answer_is_still_a_clarify_answer(mock_server: subprocess.Popen) -> None:
     messages = resumed(json.dumps({"user_response": "Uffici task board"}), call_id="call_1")
     content = json.loads(ask(messages, stream=False, tools=DIRECT))["choices"][0]["message"][

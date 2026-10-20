@@ -97,7 +97,40 @@ def test_a_script_without_the_expectation_is_judged_as_before() -> None:
 def test_the_run_reads_the_expectation_from_the_releases_own_script() -> None:
     source = RUNNER.read_text()
     assert "expects_tool_call=expects_tool_call" in source
-    assert "fixture_expects_tool_call(json.loads(fixture_text))" in source
+    assert "fixture_expects_tool_call(fixture_script)" in source
+    assert "fixture_script = json.loads(fixture_text)" in source
+
+
+# ------------------------------------------------------------- the re-run tally (#2454)
+
+RERUN_SCRIPT = {"steps": [{"step": "ring"}, {"step": "expectToolRerun"}]}
+
+
+def test_a_script_expects_a_rerun_only_when_it_says_so() -> None:
+    assert e2e.fixture_expects_tool_rerun(RERUN_SCRIPT) is True
+    for script in (TOOL_SCRIPT, {}, {"steps": None}, [], {"steps": ["x"]}):
+        assert e2e.fixture_expects_tool_rerun(script) is False
+
+
+def test_a_script_that_expects_a_rerun_passes_on_a_counted_one() -> None:
+    lines = _log({**VERDICT, "toolCalls": 2, "toolReruns": 1})
+    assert e2e.verdict_failures(lines, 0, expects_tool_rerun=True) == []
+
+
+@pytest.mark.parametrize("reruns", [0, None, True, "1"])
+def test_a_script_that_expects_a_rerun_fails_without_one(reruns) -> None:
+    """🔴 A tool call is not a re-run: `toolCalls` never stands in for `toolReruns`."""
+    verdict = {**VERDICT, "toolCalls": 2}
+    if reruns is not None:
+        verdict["toolReruns"] = reruns
+    failures = e2e.verdict_failures(_log(verdict), 0, expects_tool_rerun=True)
+    assert len(failures) == 1 and "no re-run of a recorded call" in failures[0]
+
+
+def test_the_run_reads_the_rerun_expectation_from_the_releases_own_script() -> None:
+    source = RUNNER.read_text()
+    assert "expects_tool_rerun=expects_tool_rerun" in source
+    assert "fixture_expects_tool_rerun(fixture_script)" in source
 
 
 def test_log_lines_drops_what_is_not_a_json_object() -> None:
@@ -241,6 +274,44 @@ def test_each_restart_the_companion_asks_for_is_made_once() -> None:
     assert e2e.restarts_owed(_log(asked, other, asked), 1) == 1
 
 
+def test_each_session_end_the_companion_asks_for_is_made_once_for_its_conversation() -> None:
+    """#2414: an `endHarnessSession` step names a conversation only this runner can reach
+    inside Hermes; each is ended once, in the order asked."""
+    first = {"msg": e2e.END_SESSION_LINE, "conversation": "conv_ci_invoices"}
+    second = {"msg": e2e.END_SESSION_LINE, "conversation": "conv_ci_ledger"}
+    other = {"msg": e2e.RESTART_HARNESS}
+    assert e2e.session_ends_owed(_log(other), 0) == []
+    assert e2e.session_ends_owed(_log(first, other), 0) == ["conv_ci_invoices"]
+    assert e2e.session_ends_owed(_log(first, other), 1) == []
+    assert e2e.session_ends_owed(_log(first, other, second), 1) == ["conv_ci_ledger"]
+
+
+def test_a_session_is_ended_inside_the_gateway_as_hermes(monkeypatch) -> None:
+    """Inside the running gateway's container, as Hermes's user, with the helper on stdin
+    and the conversation as its argument."""
+    seen: dict = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"], seen["kwargs"] = args, kwargs
+        return e2e.subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(e2e.subprocess, "run", fake_run)
+    e2e.end_harness_session("hermes-container", "conv_ci_invoices")
+    assert seen["args"] == [
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "hermes",
+        "hermes-container",
+        e2e.HERMES_PYTHON,
+        "-",
+        "conv_ci_invoices",
+    ]
+    assert "db.end_session(session_id, END_REASON)" in seen["kwargs"]["input"]
+    assert seen["kwargs"]["timeout"] == e2e.CONTRACT_TIMEOUT_S
+
+
 SHIPPED = {
     "msg": e2e.LOGS_SHIPPED,
     "companion": 12,
@@ -354,3 +425,110 @@ def test_the_context_fails_off_the_system_side_or_on_the_user_side() -> None:
 
 def test_a_release_fixture_without_the_canary_has_nothing_to_prove() -> None:
     assert e2e.context_failures("", False) == []
+
+
+def test_the_summary_passes_on_the_user_side() -> None:
+    log = "\n".join(
+        [
+            _mock("summary_canary=False summary_system=False"),
+            _mock("summary_canary=True summary_system=False"),
+        ]
+    )
+    assert e2e.summary_failures(log, True) == []
+
+
+def test_the_summary_fails_off_the_user_side_or_on_the_system_side() -> None:
+    never = _mock("summary_canary=False summary_system=False")
+    assert "never reached" in " ".join(e2e.summary_failures(never, True))
+    system = _mock("summary_canary=True summary_system=True")
+    assert "SYSTEM side" in " ".join(e2e.summary_failures(system, True))
+
+
+def test_a_release_fixture_without_a_summary_has_nothing_to_prove() -> None:
+    assert e2e.summary_failures("", False) == []
+
+
+MEMORY_FIXTURE = '{"memory": {"unavailableIn": ["onboarding"]}, "text": "[remember-this]"}'
+
+
+def test_memory_passes_when_recalled_on_the_user_side_and_the_outage_was_told() -> None:
+    log = "\n".join(
+        [
+            _mock("memory_recalled=True memory_unavailable=False memory_system=False"),
+            _mock("memory_recalled=False memory_unavailable=True memory_system=False"),
+        ]
+    )
+    assert e2e.memory_failures(log, MEMORY_FIXTURE, "") == []
+
+
+def test_memory_fails_never_recalled_on_the_system_side_or_the_outage_unsaid() -> None:
+    never = _mock("memory_recalled=False memory_unavailable=True memory_system=False")
+    assert "never came back" in " ".join(e2e.memory_failures(never, MEMORY_FIXTURE, ""))
+    system = _mock("memory_recalled=True memory_unavailable=True memory_system=True")
+    assert "SYSTEM message" in " ".join(e2e.memory_failures(system, MEMORY_FIXTURE, ""))
+    unsaid = _mock("memory_recalled=True memory_unavailable=False memory_system=False")
+    assert "memory down" in " ".join(e2e.memory_failures(unsaid, MEMORY_FIXTURE, ""))
+
+
+def test_hermes_keeping_its_own_memory_fails_the_run() -> None:
+    log = _mock("memory_recalled=True memory_unavailable=True memory_system=False")
+    assert e2e.memory_failures(log, MEMORY_FIXTURE, "something.lock\n") == []
+    kept = " ".join(e2e.memory_failures(log, MEMORY_FIXTURE, "MEMORY.md\nUSER.md\n"))
+    assert "MEMORY.md, USER.md" in kept
+
+
+def test_a_release_fixture_without_memory_has_nothing_to_prove() -> None:
+    assert e2e.memory_failures("", "{}", "MEMORY.md") == []
+
+
+FILES_FIXTURE = '{"data": "[pdf-canary]", "steps": [{"step": "interruptNextUpload"}]}'
+FILES_MOCK = _mock(
+    "pdf_media=True image_media=True media_written=True upload_call=True upload_result=False"
+)
+FILES_VERDICT = {
+    **VERDICT,
+    "downloads": 2,
+    "uploads": 2,
+    "uploadsResumed": 1,
+    "attachmentsPosted": 1,
+}
+
+
+def test_the_files_pass_when_both_use_cases_ran_and_the_upload_resumed() -> None:
+    assert e2e.file_failures(FILES_MOCK, FILES_FIXTURE, _log(FILES_VERDICT)) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("downloads", 1), ("uploads", 1), ("uploadsResumed", 0), ("attachmentsPosted", None)],
+)
+def test_the_files_fail_on_a_count_under_its_floor(field: str, value: object) -> None:
+    verdict = {**FILES_VERDICT, field: value}
+    if value is None:
+        del verdict[field]
+    failed = " ".join(e2e.file_failures(FILES_MOCK, FILES_FIXTURE, _log(verdict)))
+    assert f"{field}=" in failed
+
+
+def test_a_resume_is_owed_only_when_the_fixture_interrupts_an_upload() -> None:
+    verdict = {**FILES_VERDICT, "uploadsResumed": 0}
+    assert e2e.file_failures(FILES_MOCK, '{"data": "[pdf-canary]"}', _log(verdict)) == []
+
+
+@pytest.mark.parametrize(
+    ("flag", "reason"),
+    [
+        ("pdf_media", "PDF"),
+        ("image_media", "image"),
+        ("media_written", "made a file"),
+        ("upload_call", "save a file"),
+    ],
+)
+def test_the_files_fail_when_the_model_did_not_see_or_make_them(flag: str, reason: str) -> None:
+    log = FILES_MOCK.replace(f"{flag}=True", f"{flag}=False")
+    assert reason in " ".join(e2e.file_failures(log, FILES_FIXTURE, _log(FILES_VERDICT)))
+
+
+def test_a_release_fixture_without_files_has_nothing_to_prove() -> None:
+    assert e2e.file_failures("", "{}", []) == []
+    assert "uploads=none" in " ".join(e2e.file_failures(FILES_MOCK, FILES_FIXTURE, []))

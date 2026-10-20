@@ -71,6 +71,11 @@ SHUTTING_DOWN = "shutting_down"
 RESTART_HARNESS = "restart the harness"
 # How long Hermes gets to shut down on a restart before Docker kills it.
 RESTART_GRACE_S = 30
+# What the companion logs when an `endHarnessSession` step wants one conversation's
+# Hermes session ended under the live gateway (#2414), with the conversation's id as
+# `conversation`. `end_session.py` does it, inside the gateway's container.
+END_SESSION_LINE = "end the harness session"
+END_SESSION = DEV / "end_session.py"
 
 
 class Failure(Exception):
@@ -137,9 +142,175 @@ def context_failures(mock_log: str, fixture_has_context: bool) -> list[str]:
     return failures
 
 
+#: Where an opener's summary landed, as the mock prints it per completion — booleans,
+#: never text (#2451).
+MOCK_SUMMARY_CANARY = "summary_canary=True"
+MOCK_SUMMARY_SYSTEM = "summary_system=True"
+
+#: The canary the folded fixture's summary segment carries.
+SUMMARY_CANARY = "[summary-canary]"
+
+
+def summary_failures(mock_log: str, fixture_has_summary: bool) -> list[str]:
+    """Why the platform's summary did not reach the model as it must; empty for a pass.
+
+    Judged only when the release's fixture DECLARES a summary (its canary): a companion
+    released before the summary has nothing to prove here. A fresh session's opener
+    carries it, so it must reach a model on the USER side — where the opener lands — and
+    never on the system side.
+    """
+    if not fixture_has_summary:
+        return []
+    failures = []
+    if MOCK_SUMMARY_CANARY not in mock_log:
+        failures.append("the opener's summary never reached a model on the USER side")
+    if MOCK_SUMMARY_SYSTEM in mock_log:
+        failures.append("the opener's summary reached a model on the SYSTEM side — it must never")
+    return failures
+
+
+#: Where a recall landed, as the mock prints it per completion — booleans, never text.
+MOCK_MEMORY_RECALLED = "memory_recalled=True"
+MOCK_MEMORY_UNAVAILABLE = "memory_unavailable=True"
+MOCK_MEMORY_SYSTEM = "memory_system=True"
+
+#: The marker a fixture's message carries to make the mock remember the canary's fact.
+MEMORY_MARKER = "[remember-this]"
+#: The fixture key that takes memory down in some of its conversations.
+MEMORY_OUTAGE = '"unavailableIn"'
+#: Hermes's own memory files — none may exist with the plugin installed.
+BUILTIN_MEMORY_FILES = ("MEMORY.md", "USER.md")
+
+#: Hermes's memories directory, through Hermes's OWN resolver, one name per line.
+LIST_BUILTIN_MEMORY = (
+    "import os\nfrom tools.memory_tool import get_memory_dir\nd = get_memory_dir()\n"
+    "print('\\n'.join(sorted(os.listdir(d))) if d.is_dir() else '')"
+)
+
+
+def memory_failures(mock_log: str, fixture_text: str, memory_files: str) -> list[str]:
+    """Why the agent's memory did not reach the model as it must; empty for a pass.
+
+    Judged only when the release's fixture DECLARES the memory scenario (its remember
+    marker). A fact one turn remembered must come back inside Hermes's ``<memory-context>``
+    on the USER side of a later turn and never on the system side; a conversation whose
+    memory the fixture takes down must tell the model so inside the same fence; and Hermes
+    must keep no notes of its own.
+    """
+    if MEMORY_MARKER not in fixture_text:
+        return []
+    failures = []
+    kept = [name for name in memory_files.splitlines() if name.strip() in BUILTIN_MEMORY_FILES]
+    if kept:
+        failures.append(
+            f"Hermes wrote its own memory ({', '.join(kept)}): its built-in memory is not off"
+        )
+    if MOCK_MEMORY_RECALLED not in mock_log:
+        failures.append(
+            "a remembered fact never came back inside <memory-context> before a model call"
+        )
+    if MOCK_MEMORY_SYSTEM in mock_log:
+        failures.append(
+            "the memory canary reached a model's SYSTEM message — recall belongs on the user side"
+        )
+    if MEMORY_OUTAGE in fixture_text and MOCK_MEMORY_UNAVAILABLE not in mock_log:
+        failures.append(
+            "a turn with the platform's memory down never told the model so inside <memory-context>"
+        )
+    return failures
+
+
+#: The files (#2679), as the mock prints them per completion — booleans, never text: a
+#: person's PDF and PNG reached the model as media, the mock made a file in the shared
+#: workspace, and it asked to save one into Files.
+MOCK_PDF_MEDIA = "pdf_media=True"
+MOCK_IMAGE_MEDIA = "image_media=True"
+MOCK_MEDIA_WRITTEN = "media_written=True"
+MOCK_UPLOAD_CALL = "upload_call=True"
+
+#: The canary the files conversation's PDF carries — the scenario's declaration.
+PDF_CANARY = "[pdf-canary]"
+#: The fixture step that drops an upload's connection once.
+INTERRUPT_UPLOAD = '"interruptNextUpload"'
+
+#: The companion's verdict fields for the files, and the floor each must reach.
+FILE_VERDICT_FLOORS = {"downloads": 2, "uploads": 2, "attachmentsPosted": 1}
+FILE_VERDICT_RESUMED = "uploadsResumed"
+
+
+def file_failures(mock_log: str, fixture_text: str, lines: list[dict]) -> list[str]:
+    """Why the two file use cases did not run end to end; empty for a pass.
+
+    Judged only when the release's fixture DECLARES them (the PDF's canary): a companion
+    released before the files has nothing to prove here. The verdict must count both
+    prefetched attachments, an attached and a saved upload, one attachment on a post and —
+    when the fixture interrupts one — a resumed upload; the mock must have seen both files
+    as media, made a file and asked to save one.
+    """
+    if PDF_CANARY not in fixture_text:
+        return []
+    verdict = next((line for line in lines if line.get("msg") == SCRIPT_COMPLETE), {})
+    floors = dict(FILE_VERDICT_FLOORS)
+    if INTERRUPT_UPLOAD in fixture_text:
+        floors[FILE_VERDICT_RESUMED] = 1
+    failures = []
+    for field, floor in floors.items():
+        value = verdict.get(field)
+        if not _is_count(value) or value < floor:
+            shown = value if value is not None else "none"
+            failures.append(
+                f"the companion counted {field}={shown}, the files scenario needs at least {floor}"
+            )
+    for literal, reason in (
+        (MOCK_PDF_MEDIA, "the person's PDF never reached a model as a document it could open"),
+        (MOCK_IMAGE_MEDIA, "the person's image never reached a model as an image part"),
+        (MOCK_MEDIA_WRITTEN, "the model never made a file in the shared workspace"),
+        (MOCK_UPLOAD_CALL, "the model never asked to save a file into Files"),
+    ):
+        if literal not in mock_log:
+            failures.append(reason)
+    return failures
+
+
+def builtin_memory_files(container: str) -> str:
+    """Hermes's memories directory, listed inside the running gateway's container."""
+    listed = subprocess.run(
+        ["docker", "exec", "-u", "hermes", container, HERMES_PYTHON, "-c", LIST_BUILTIN_MEMORY],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=CONTRACT_TIMEOUT_S,
+    )
+    if listed.returncode != 0:
+        raise Failure("Hermes's memories directory could not be listed", listed.stderr)
+    return listed.stdout
+
+
 def restarts_owed(lines: list[dict], done: int) -> int:
     """How many harness restarts the companion has asked for that this run has not made."""
     return max(0, sum(1 for line in lines if line.get("msg") == RESTART_HARNESS) - done)
+
+
+def session_ends_owed(lines: list[dict], done: int) -> list[str]:
+    """The conversations whose Hermes session the companion asked this run to end, and that
+    it has not ended yet, in the order asked."""
+    asked = [
+        str(line.get("conversation") or "") for line in lines if line.get("msg") == END_SESSION_LINE
+    ]
+    return asked[done:]
+
+
+def end_harness_session(container: str, conversation: str) -> subprocess.CompletedProcess[str]:
+    """End one conversation's session inside the running gateway's container, as Hermes's
+    own user (``end_session.py``)."""
+    return subprocess.run(
+        ["docker", "exec", "-i", "-u", "hermes", container, HERMES_PYTHON, "-", conversation],
+        input=END_SESSION.read_text(encoding="utf-8"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=CONTRACT_TIMEOUT_S,
+    )
 
 
 def harness_failures(hermes_log: str, mock_log: str) -> list[str]:
@@ -175,8 +346,28 @@ def fixture_expects_tool_call(fixture: object) -> bool:
     )
 
 
+#: The fixture step that expects a re-run of a recorded call (#2454).
+EXPECT_TOOL_RERUN = "expectToolRerun"
+
+
+def fixture_expects_tool_rerun(fixture: object) -> bool:
+    """Whether the release's script expects a re-run of a recorded tool call at all.
+
+    Judged only when the script asks, like the tool tally: a companion released before
+    re-runs existed has nothing to prove here.
+    """
+    steps = fixture.get("steps") if isinstance(fixture, dict) else None
+    return any(
+        isinstance(step, dict) and step.get("step") == EXPECT_TOOL_RERUN for step in steps or []
+    )
+
+
 def verdict_failures(
-    lines: list[dict], exit_code: int, *, expects_tool_call: bool = False
+    lines: list[dict],
+    exit_code: int,
+    *,
+    expects_tool_call: bool = False,
+    expects_tool_rerun: bool = False,
 ) -> list[str]:
     """Every reason the finished run is not a pass; empty only for a real pass.
 
@@ -212,6 +403,14 @@ def verdict_failures(
             failures.append(
                 f"the script expects a tool call and the companion counted {shown} — no"
                 " Uffici tool reached the platform"
+            )
+    if expects_tool_rerun:
+        reruns = verdict.get("toolReruns")
+        if not _is_count(reruns) or reruns < 1:
+            shown = reruns if reruns is not None else "no"
+            failures.append(
+                f"the script expects a tool re-run and the companion counted {shown} — no"
+                " re-run of a recorded call reached the platform"
             )
     if exit_code != 0:
         unmet = verdict.get("unmet", "some")
@@ -286,7 +485,14 @@ def run_hermes_contract(container: str) -> subprocess.CompletedProcess[str]:
     discovers the plugin exactly as the gateway did."""
     return subprocess.run(
         [
-            "docker", "exec", "-i", "-u", "hermes", container, HERMES_PYTHON, "-",
+            "docker",
+            "exec",
+            "-i",
+            "-u",
+            "hermes",
+            container,
+            HERMES_PYTHON,
+            "-",
             MANIFEST.read_text(encoding="utf-8"),
         ],
         input=CONTRACT_PROBE.read_text(encoding="utf-8"),
@@ -371,9 +577,7 @@ class Follower:
 
 
 def container_logs(container: str) -> str:
-    return subprocess.run(
-        ["docker", "logs", container], text=True, capture_output=True
-    ).stdout
+    return subprocess.run(["docker", "logs", container], text=True, capture_output=True).stdout
 
 
 def exit_code_of(container: str) -> int | None:
@@ -470,6 +674,7 @@ def run(version: str, fixture_dir: Path) -> None:
 
         deadline = time.monotonic() + SCRIPT_TIMEOUT_S
         restarts = 0
+        ended = 0
         exit_code = exit_code_of(companion)
         while exit_code is None and time.monotonic() < deadline:
             time.sleep(1)
@@ -483,18 +688,49 @@ def run(version: str, fixture_dir: Path) -> None:
                 )
                 if restart.returncode != 0:
                     raise Failure("the Hermes container would not restart", the_other_side())
+            for conversation in session_ends_owed(log_lines(follower.text), ended):
+                ended += 1
+                print(f"\n── ending Hermes's session of {conversation} ({ended})", flush=True)
+                try:
+                    end = end_harness_session(hermes, conversation)
+                except subprocess.TimeoutExpired as exc:
+                    raise Failure(
+                        f"Hermes's session of {conversation} could not be ended in time",
+                        the_other_side(),
+                    ) from exc
+                print(redact(end.stdout, token), end="", flush=True)
+                if end.returncode != 0:
+                    raise Failure(
+                        f"Hermes's session of {conversation} could not be ended",
+                        redact(end.stdout + end.stderr, token),
+                    )
             exit_code = exit_code_of(companion)
         if exit_code is None:
             raise Failure("the scripted conversation did not finish in time", the_other_side())
         # The companion's log is complete once it has exited.
         lines = log_lines(container_logs(companion))
         fixture_text = (fixture_dir / "ci" / "wave1.json").read_text()
-        expects_tool_call = fixture_expects_tool_call(json.loads(fixture_text))
+        fixture_script = json.loads(fixture_text)
+        expects_tool_call = fixture_expects_tool_call(fixture_script)
+        expects_tool_rerun = fixture_expects_tool_rerun(fixture_script)
         failures = (
-            verdict_failures(lines, exit_code, expects_tool_call=expects_tool_call)
+            verdict_failures(
+                lines,
+                exit_code,
+                expects_tool_call=expects_tool_call,
+                expects_tool_rerun=expects_tool_rerun,
+            )
             + shipped_log_failures(lines, restarts)
+            + [
+                f"the companion asked to end the session of {conversation}, "
+                "which this run never did"
+                for conversation in session_ends_owed(lines, ended)
+            ]
             + harness_failures(container_logs(hermes), container_logs(mock))
             + context_failures(container_logs(mock), CONTEXT_CANARY in fixture_text)
+            + summary_failures(container_logs(mock), SUMMARY_CANARY in fixture_text)
+            + memory_failures(container_logs(mock), fixture_text, builtin_memory_files(hermes))
+            + file_failures(container_logs(mock), fixture_text, lines)
         )
         if failures:
             raise Failure("; ".join(failures), the_other_side())

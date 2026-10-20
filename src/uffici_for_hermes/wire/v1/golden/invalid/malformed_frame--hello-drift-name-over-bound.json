@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "type": "hello",
+  "harness": "hermes",
+  "harnessVersion": "0.21.5",
+  "pluginVersion": "0.1.0",
+  "token": "test-wire-token-example-not-a-secret-0000",
+  "contextBudgetTokens": 48000,
+  "drift": {
+    "mcpServers": [
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "channels": [],
+    "localMemory": []
+  }
+}

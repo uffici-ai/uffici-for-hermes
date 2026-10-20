@@ -6,8 +6,8 @@ number may be in flight, and their results arrive in whatever order they finish
 — and every one is bounded by its own ``deadlineMs``.
 
 The frame pair is generic rather than one frame per operation: the log push
-(``logs.push``) and the agent's tools (``tools.list``, ``tools.call``) ride it,
-and conversation-scoped memory will.
+(``logs.push``), the agent's tools (``tools.list``, ``tools.call``) and its memory
+(``memory.recall``, ``memory.remember``, ``memory.forget``, ``memory.unfold``) ride it.
 
 🔴 A payload never reaches a log line — not the call's, not the result's. They
 carry transcript content and memory rows. What may be logged is the ``op``, the
