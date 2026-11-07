@@ -1,6 +1,6 @@
 # The Uffici plugin for Hermes.
 #
-# Developed in uffici-ai/velcra-platform under `uffici/`, mirrored to
+# Developed in Uffici's platform repository under `uffici/`, mirrored to
 # uffici-ai/uffici-for-hermes on a release tag (epic #1994, decisions 34-36).
 #
 # 🔴 Dependencies are confined to what Hermes itself ships. The plugin runs

@@ -33,7 +33,7 @@ MAX_DEADLINE_MS = 300_000
 
 #: The sentence each class relays to the person (decision 32).
 #: 🔴 The companion's own wording, pinned from the platform repository by
-#: ``scripts/__tests__/uffici-call-instructions-parity.test.mjs``: the person must
+#: ``uffici-call-instructions-parity.test.mjs``: the person must
 #: hear the same thing whichever side answered the call.
 INSTRUCTIONS = {
     "unknown_op": (

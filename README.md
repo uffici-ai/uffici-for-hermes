@@ -353,7 +353,7 @@ build attestation. Verify one before installing it by hand:
 
 ```sh
 cosign verify-blob --bundle uffici-for-hermes.tar.gz.sigstore.json \
-  --certificate-identity-regexp 'https://github.com/uffici-ai/uffici-for-hermes/' \
+  --certificate-identity-regexp '^https://github\.com/uffici-ai/uffici-for-hermes/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com uffici-for-hermes.tar.gz
 ```
 

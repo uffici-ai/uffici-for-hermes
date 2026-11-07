@@ -1,7 +1,7 @@
 """The platform hint Hermes injects into the system prompt.
 
 🔴 The identity lines are QUOTED VERBATIM from the platform's
-``apps/conversations-api/src/lib/channel-frame.ts`` (``AI_IDENTITY_LINES``) and never
+conversations API (``channel-frame.ts``, ``AI_IDENTITY_LINES``) and never
 imported: the `uffici/` fence forbids this child reading the platform, and this
 file is exported to its own repository where the platform does not exist.
 
