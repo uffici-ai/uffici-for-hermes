@@ -21,16 +21,16 @@ WIRE_V1 = Path(support.__file__).parent / "wire" / "v1"
 @pytest.mark.parametrize(
     ("version", "verdict"),
     [
-        ("0.21.5", True),
-        ("0.21.9", True),
-        ("v0.21.5", True),
-        ("0.21.5rc1", True),
-        ("0.21.5+dev", True),
-        ("0.21.4", False),
-        ("0.20.0", False),
-        ("0.22.0", False),
+        ("0.23.0", True),
+        ("0.23.9", True),
+        ("v0.23.0", True),
+        ("0.23.0rc1", True),
+        ("0.23.0+dev", True),
+        ("0.22.7", False),
+        ("0.21.5", False),
+        ("0.24.0", False),
         ("1.0.0", False),
-        ("0.22", False),
+        ("0.24", False),
     ],
 )
 def test_the_verdict_is_the_range(version: str, verdict: bool) -> None:
@@ -75,8 +75,8 @@ def test_the_hermes_the_readme_names_and_the_rig_pins_is_supported() -> None:
 
 
 def test_the_hello_carries_the_statement_only_when_given() -> None:
-    statement = support.harness_support("0.21.5")
-    hello = plugin_hello("t" * 40, "0.21.5", "0.1.0", 1000, None, statement)
+    statement = support.harness_support("0.23.0")
+    hello = plugin_hello("t" * 40, "0.23.0", "0.1.0", 1000, None, statement)
     golden = json.loads(
         (WIRE_V1 / "golden" / "valid" / "hello-plugin-with-harness-support.json").read_text()
     )
@@ -84,7 +84,7 @@ def test_the_hello_carries_the_statement_only_when_given() -> None:
     assert "harnessSupport" not in plugin_hello("t" * 40, "0.21.5", "0.1.0", 1000)
 
 
-@pytest.mark.parametrize(("version", "warned"), [("0.23.0", True), ("0.21.5", False)])
+@pytest.mark.parametrize(("version", "warned"), [("0.21.5", True), ("0.23.0", False)])
 def test_connect_says_an_unsupported_hermes_and_never_refuses_it(
     version: str, warned: bool, caplog
 ) -> None:
@@ -108,3 +108,17 @@ def test_connect_says_an_unsupported_hermes_and_never_refuses_it(
     assert hello["harnessSupport"] == {"range": support.SUPPORTED_RANGE, "supported": not warned}
     said = "outside the versions this plugin supports" in caplog.text
     assert said is warned
+
+
+def test_the_plugin_still_parses_on_the_python_an_older_hermes_runs() -> None:
+    """🔴 Never refused (#2414): on an older Hermes (Python 3.13 before 0.22) the plugin must
+    still IMPORT, connect and say the Hermes is unsupported. One line of 3.14-only syntax —
+    PEP 758's unparenthesized ``except A, B:``, which a formatter targeting 3.14 writes on its
+    own — turns that into a SyntaxError at load, with nothing reported anywhere (#3124)."""
+    import ast
+
+    package = Path(support.__file__).parent
+    sources = sorted(package.rglob("*.py"))
+    assert len(sources) >= 15, "the plugin's sources were not found"
+    for source in sources:
+        ast.parse(source.read_text(encoding="utf-8"), str(source), feature_version=(3, 13))

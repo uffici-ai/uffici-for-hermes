@@ -395,9 +395,10 @@ def _fenced(text: str) -> list[str]:
 def _clarify_result(payload: dict) -> str | None:
     """The person's answer, when this request resumes a turn after its ``clarify``.
 
-    The last message is the tool's result; its JSON carries ``user_response`` (the
-    pinned ``tools/clarify_tool.py``). A result that is not that shape is still the
-    answer, as text.
+    The last message is the tool's result. Hermes 0.23 answers a batch:
+    ``{"responses": [{"user_response": ...}, ...], "outcome": ...}`` (the pinned
+    ``tools/clarify_tool.py``, ``_result``); an older Hermes answered one question as
+    ``{"user_response": ...}``. A result that is neither shape is still the answer, as text.
     """
     last = _last_tool_message(payload)
     if last is None or last.get("tool_call_id") in (TOOL_CALL_ID, MEMORY_CALL_ID, UPLOAD_CALL_ID):
@@ -408,6 +409,10 @@ def _clarify_result(payload: dict) -> str | None:
         parsed = json.loads(content) if isinstance(content, str) else None
     except ValueError:
         parsed = None
+    if isinstance(parsed, dict) and isinstance(parsed.get("responses"), list):
+        first = parsed["responses"][0] if parsed["responses"] else {}
+        value = first.get("user_response") if isinstance(first, dict) else None
+        return ", ".join(value) if isinstance(value, list) else str(value or "")
     if isinstance(parsed, dict) and "user_response" in parsed:
         return str(parsed.get("user_response") or "")
     return str(content or "")
@@ -420,7 +425,10 @@ def _clarify_call() -> dict:
         "type": "function",
         "function": {
             "name": "clarify",
-            "arguments": json.dumps({"question": ASK_QUESTION, "choices": ASK_CHOICES}),
+            # Hermes 0.23 takes a batch of 1-5 questions; one question is a one-entry array.
+            "arguments": json.dumps(
+                {"questions": [{"question": ASK_QUESTION, "choices": ASK_CHOICES}]}
+            ),
         },
     }
 

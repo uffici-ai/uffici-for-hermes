@@ -21,11 +21,11 @@ from typing import Any
 __all__ = ["MINIMUM", "SUPPORTED_RANGE", "UPPER_EXCLUSIVE", "harness_support", "parse_version"]
 
 #: The oldest Hermes this release is written and tested against (README, ``dev/Dockerfile``).
-MINIMUM = (0, 21, 5)
+MINIMUM = (0, 23, 0)
 #: The first Hermes minor this release has not been tested against.
-UPPER_EXCLUSIVE = (0, 22, 0)
+UPPER_EXCLUSIVE = (0, 24, 0)
 #: The range in the words the hello carries (at most 64 characters on the wire).
-SUPPORTED_RANGE = ">=0.21.5,<0.22"
+SUPPORTED_RANGE = ">=0.23.0,<0.24"
 
 _VERSION = re.compile(r"^v?(\d+)\.(\d+)(?:\.(\d+))?")
 

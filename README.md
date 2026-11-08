@@ -43,13 +43,16 @@ Uffici conversation**, and what the session sends is the agent's answer.
 ## Requirements
 
 - A Hermes you run as a **gateway** (`hermes gateway`), since the plugin is a gateway
-  platform. The plugin is written against **Hermes 0.21.5** (commit `f97608f1`, release
-  `v2026.9.24`) and supports `>=0.21.5,<0.22`: its adapter uses those versions' platform
+  platform. The plugin is written against **Hermes 0.23.0** (commit `2bd378ed`, release
+  `v0.23.0`) and supports `>=0.23.0,<0.24`: its adapter uses those versions' platform
   interfaces. A Hermes outside the range still connects and answers, but may misbehave without
   an error, so the plugin logs a warning when it connects and `uffici doctor` shows the
   harness as not supported.
-- Python 3.13, which is what Hermes's own environment provides. The plugin runs inside that
+- Python 3.14, which is what Hermes's own environment provides. The plugin runs inside that
   environment and depends only on libraries Hermes already ships (`websockets`, `httpx`).
+- Hermes's `plugins.isolation` left at its default, `in_process`. The plugin registers a
+  gateway platform and a memory provider, and Hermes refuses both to a plugin it runs in a
+  separate host process.
 - The [Uffici companion](https://github.com/uffici-ai/uffici-companion) on the same machine
   or in the same pod.
 

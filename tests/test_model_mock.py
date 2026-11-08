@@ -163,7 +163,9 @@ def test_the_ask_marker_makes_the_model_call_hermess_clarify(mock_server: None) 
     ]
     assert len(calls) == 1 and calls[0]["function"]["name"] == "clarify"
     arguments = json.loads(calls[0]["function"]["arguments"])
-    assert arguments["question"] and len(arguments["choices"]) == 2
+    # Hermes 0.23's clarify takes a batch; a bare question is refused by the tool (#3124).
+    (asked,) = arguments["questions"]
+    assert asked["question"] and len(asked["choices"]) == 2
     assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
 
 
@@ -193,6 +195,45 @@ def test_once_the_person_answered_the_model_says_what_they_chose(mock_server: No
     message = payload["choices"][0]["message"]
     assert "tool_calls" not in message, "the model asked again instead of answering"
     assert "Uffici task board" in message["content"]
+
+
+def test_the_answer_is_read_from_hermess_batch_result(mock_server: None) -> None:
+    """Hermes 0.23 answers clarify as a batch (``{"responses": [...], "outcome"}``); the
+    model reads the person's choice out of it, not the JSON around it (#3124)."""
+    messages = [
+        {"role": "user", "content": "Ana: do we have a board? [ask-a-question]"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "clarify", "arguments": "{}"},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps(
+                {
+                    "responses": [
+                        {
+                            "question": "Which?",
+                            "status": "answered",
+                            "user_response": "Uffici task board",
+                        }
+                    ],
+                    "outcome": "submitted",
+                }
+            ),
+        },
+    ]
+    message = json.loads(ask(messages, stream=False))["choices"][0]["message"]
+    assert "tool_calls" not in message, "the model asked again instead of answering"
+    assert "Uffici task board" in message["content"]
+    assert "responses" not in message["content"]
 
 
 def test_a_marker_the_person_was_already_asked_with_does_not_ask_again(mock_server: None) -> None:

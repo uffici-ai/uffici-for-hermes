@@ -3,8 +3,8 @@
 🔴 Why a stand-in and not the real thing. Hermes is not a dependency of this
 package and must not become one: the plugin is installed INTO Hermes's own
 sealed virtual environment, which already provides it. PyPI's newest
-``hermes-agent`` is 0.19.0 while this plugin targets 0.21.5 (commit
-``f97608f1``), so taking it as a dev dependency would compile these tests
+``hermes-agent`` is 0.19.0 while this plugin targets 0.23.0 (commit
+``2bd378ed``), so taking it as a dev dependency would compile these tests
 against an API two minors away from the one the plugin is written for — worse
 than a stand-in, because it would look like verification.
 
@@ -230,7 +230,7 @@ class BasePlatformAdapter(ABC):
         reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> Any:
-        """Transcribed from base.py (0.21.5): the default is a normal send."""
+        """Transcribed from base.py (0.23.0, :2859): the default is a normal send."""
         return await self.send(
             chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata
         )
@@ -244,7 +244,7 @@ class BasePlatformAdapter(ABC):
         session_key: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        """Transcribed from base.py (v2026.9.24, :2852): the TEXT fallback — a numbered
+        """Transcribed from base.py (v0.23.0, :2830): the TEXT fallback — a numbered
         list, ``mark_awaiting_text`` so the gateway's text intercept takes the next
         message as the answer, and a plain ``send``."""
         if choices:
@@ -255,39 +255,65 @@ class BasePlatformAdapter(ABC):
             text = f"❓ {question}"
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
 
-    # The media hooks (base.py, v2026.9.24, :3131 / :3163): each default is the "friendly
+    # The media hooks (base.py, v0.23.0, :3101 / :3133): each default is the "friendly
     # failure notice" — ``_media_failure_text`` sent through ``emit_warning``, which is a plain
     # ``send`` while Hermes's warning notices are on (the stand-in keeps them on).
     async def _send_media_fallback_notice(
-        self, kind: str, chat_id: str, metadata: Optional[dict[str, Any]],
+        self,
+        kind: str,
+        chat_id: str,
+        metadata: Optional[dict[str, Any]],
         file_name: Optional[str] = None,
     ) -> SendResult:
         suffix = f" ({file_name})" if file_name else ""
         return await self.send(
-            chat_id=chat_id, content=f"⚠️ Couldn't deliver the {kind} attachment{suffix}.",
+            chat_id=chat_id,
+            content=f"⚠️ Couldn't deliver the {kind} attachment{suffix}.",
             metadata=metadata,
         )
 
-    async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
-                            file_name: Optional[str] = None, reply_to: Optional[str] = None,
-                            metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
         return await self._send_media_fallback_notice("file", chat_id, metadata, file_name)
 
     async def send_image_file(
-        self, chat_id: str, image_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs,
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         return await self._send_media_fallback_notice("image", chat_id, metadata)
 
     async def send_video(
-        self, chat_id: str, video_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs,
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         return await self._send_media_fallback_notice("video", chat_id, metadata)
 
     async def send_voice(
-        self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs,
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         return await self._send_media_fallback_notice("audio", chat_id, metadata)
 
@@ -321,8 +347,8 @@ class BasePlatformAdapter(ABC):
         return None
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
-        """Transcribed from base.py (v2026.9.24, :3469); the real one logs a raise and
-        swallows it."""
+        """Transcribed from base.py (v0.23.0, :3439, byte-identical to v2026.9.24); the real
+        one logs a raise and swallows it."""
         hook = getattr(self, hook_name, None)
         if not callable(hook):
             return
@@ -414,7 +440,7 @@ class ClarifyEntry:
 
 
 class ClarifyGateway:
-    """``tools.clarify_gateway`` (pinned v2026.9.24), as much as this plugin touches.
+    """``tools.clarify_gateway`` (pinned v0.23.0), as much as this plugin touches.
 
     Transcribed: ``register`` starts an open-ended entry (no choices) in text mode;
     ``resolve_gateway_clarify(clarify_id, response)`` answers False for an unknown or
@@ -422,8 +448,10 @@ class ClarifyGateway:
     resolves the oldest pending entry of the session when the text is a choice's number
     or label, or any text in text mode (the real coercion's multi-select and
     ``(Recommended)`` branches are not reproduced); ``mark_awaiting_text`` flips an
-    entry into text mode; ``has_pending``; and ``clear_session(session_key)`` drops every
-    pending entry, answering each waiter ``""`` and returning how many it cancelled.
+    entry into text mode; ``has_pending``; ``get_pending(clarify_id)`` (0.23) answers the
+    entry while it still awaits an answer, else None; and ``clear_session(session_key)``
+    drops every pending entry, answering each waiter ``CANCELLED`` (0.23; ``""`` before)
+    and returning how many it cancelled.
     ``calls`` records every call in order, so a test can say what happened BEFORE what.
     """
 
@@ -489,6 +517,10 @@ class ClarifyGateway:
     def has_pending(self, session_key: str) -> bool:
         return bool(self._pending(session_key))
 
+    def get_pending(self, clarify_id: str) -> Optional[ClarifyEntry]:
+        entry = self.entries.get(clarify_id)
+        return entry if entry is not None and not entry.resolved else None
+
     def clear_session(self, session_key: str) -> int:
         self.calls.append(("clear_session", session_key))
         cancelled = 0
@@ -497,23 +529,25 @@ class ClarifyGateway:
                 continue
             del self.entries[clarify_id]
             if not entry.resolved:
-                entry.response, entry.resolved = "", True
+                entry.response, entry.resolved = CLARIFY_CANCELLED, True
                 cancelled += 1
         return cancelled
 
 
 CLARIFY = ClarifyGateway()
+#: ``tools.clarify_gateway.CANCELLED`` (0.23): what a cleared session's waiter is answered.
+CLARIFY_CANCELLED = "\x00cancelled"
 
 
 # ----------------------------------------------------------------- gateway.session_context
 
-#: TRANSCRIBED (v2026.9.24 ``gateway/session_context.py``): the turn's routing ids are
-#: task-local ContextVars, inherited by the ``run_in_executor`` thread a turn's tools run
-#: in, and ``get_session_env`` reads one by its legacy ``HERMES_SESSION_*`` name — the
-#: ContextVar when it was ever set here, else ``os.environ``, else the default. The gateway
-#: binds ``HERMES_SESSION_PLATFORM`` to the source's platform value and
-#: ``HERMES_SESSION_CHAT_ID`` to its ``chat_id`` (``gateway/run.py`` ``_set_session_env``).
-#: Only the two names this plugin reads are reproduced.
+#: TRANSCRIBED (v2026.9.24 ``gateway/session_context.py``, unchanged in v0.23.0): the turn's
+#: routing ids are task-local ContextVars, inherited by the ``run_in_executor`` thread a turn's
+#: tools run in, and ``get_session_env`` reads one by its legacy ``HERMES_SESSION_*`` name — the
+#: ContextVar when it was ever set here, else ``os.environ``, else the default. The gateway binds
+#: ``HERMES_SESSION_PLATFORM`` to the source's platform value and ``HERMES_SESSION_CHAT_ID`` to its
+#: ``chat_id`` (``gateway/run.py`` ``_set_session_env``). Only the two names this plugin reads are
+#: reproduced.
 _SESSION_UNSET: Any = object()
 _SESSION_VARS = {
     name: contextvars.ContextVar(name, default=_SESSION_UNSET)
@@ -536,7 +570,8 @@ def set_session_vars(platform: str = "", chat_id: str = "", **_: Any) -> None:
 
 # ----------------------------------------------------------------- hermes_logging
 
-#: TRANSCRIBED (v2026.9.24 ``hermes_logging.setup_logging`` and ``gateway/run_turn.py``):
+#: TRANSCRIBED (v2026.9.24 ``hermes_logging.setup_logging`` and ``gateway/run_turn.py``;
+#: the same in v0.23.0, where the ``gateway.run`` logger also serves ``run_turn_persistence``):
 #: Hermes logs through Python ``logging``; ``setup_logging`` lowers the ROOT level to the
 #: config's ``logging.level`` (INFO by default) and never raises it; and a turn logs on the
 #: logger named ``gateway.run``, which propagates to the root. The plugin's log shipping
@@ -550,8 +585,11 @@ HERMES_DEFAULT_ROOT_LEVEL = logging.INFO
 
 def _followup_processing_hooks_apply(adapter: Any, event: Optional[MessageEvent]) -> bool:
     """TRANSCRIBED VERBATIM (v2026.9.24 ``gateway/run_turn_followup_ack.py``, byte-identical
-    in 0.21.5): whether a message Hermes parked behind a running turn and drained
-    IN-BAND as a queued follow-up gets its lifecycle hooks at all (#2246).
+    in 0.21.5 and in v0.23.0): whether a message Hermes parked behind a running turn and
+    drained IN-BAND as a queued follow-up gets its lifecycle hooks at all (#2246). In
+    0.22+ that drain serves only relay and webhook deliveries: a brief Hermes admits while
+    busy runs through its durable queue WITHOUT the hooks (``dispatch_shared_busy``), which
+    the close scheduled at admission answers (``tests/test_hermes_queue.py``, #3124).
 
     🔴 Only for an adapter that OVERRIDES ``on_processing_start`` — Hermes brackets the two, so
     an adapter defining the completion hook alone is never handed a follow-up's completion.
@@ -580,9 +618,9 @@ async def _run_followup_processing_hook(
 
 
 class MemoryProvider(ABC):
-    """TRANSCRIBED (v2026.9.24 ``agent/memory_provider.py``): the four abstract members a
-    provider must define, and the defaults of the hooks this plugin overrides. Hermes's
-    memory manager runs ``prefetch`` on a thread of its own, bounded by
+    """TRANSCRIBED (v2026.9.24 ``agent/memory_provider.py``, unchanged in v0.23.0): the four
+    abstract members a provider must define, and the defaults of the hooks this plugin
+    overrides. Hermes's memory manager runs ``prefetch`` on a thread of its own, bounded by
     ``_EXTERNAL_PREFETCH_TIMEOUT_S`` (8.0 s), and fences a non-empty answer into
     ``<memory-context>``. ``dev/hermes_contract.py`` checks the real ones."""
 
@@ -674,6 +712,7 @@ def _install() -> None:
         "resolve_text_response_for_session",
         "mark_awaiting_text",
         "has_pending",
+        "get_pending",
         "clear_session",
     ):
         setattr(clarify, name, getattr(CLARIFY, name))

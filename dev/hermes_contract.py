@@ -65,11 +65,21 @@ It prints one line per check and exits 1 naming the first that fails.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+
+def as_yaml(config: dict) -> str:
+    """A config file Hermes's own reader accepts, written without a YAML library.
+
+    JSON is YAML, so this needs nothing Hermes may stop shipping: 0.23.0 replaced PyYAML
+    with ruamel.yaml, and the probe's ``import yaml`` stopped finding a module.
+    """
+    return json.dumps(config, indent=2)
 
 
 def registered_factory():
@@ -147,7 +157,7 @@ def startup_resume_reaches_the_adapter(factory) -> str | None:
     is what puts the interruption note into the redelivered brief's turn instead.
     """
     import gateway.run_startup as startup
-    import gateway.run_turn as run_turn
+    import gateway.run_turn_persistence as run_turn_persistence
     from gateway.config import PlatformConfig
     from gateway.platforms.event import MessageEvent, MessageType
 
@@ -159,13 +169,16 @@ def startup_resume_reaches_the_adapter(factory) -> str | None:
         if drifted := read_site(startup, line):
             return drifted
     if drifted := read_site(
-        run_turn, "if session_key and _should_clear_resume_pending_after_turn(agent_result):"
+        run_turn_persistence,
+        "if session_key and _should_clear_resume_pending_after_turn(agent_result):",
     ):
         return drifted
     adapter = factory(PlatformConfig(enabled=True))
     event = MessageEvent(
-        text="", message_type=MessageType.TEXT,
-        source=adapter.build_source(chat_id="probe", chat_type="dm"), internal=True,
+        text="",
+        message_type=MessageType.TEXT,
+        source=adapter.build_source(chat_id="probe", chat_type="dm"),
+        internal=True,
     )
     if not adapter._is_startup_resume(event):  # noqa: SLF001 — the rule under test
         return "the plugin would not recognise Hermes's startup resume, and would answer twice"
@@ -322,9 +335,10 @@ def context_reaches_the_system_side_only(_factory) -> str | None:
     """
     import agent.turn_context as turn_context
     import gateway.run_turn_runner as run_turn_runner
+    import gateway.session_execution as session_execution
 
     if drifted := read_site(
-        run_turn_runner, "ephemeral_system_prompt=combined_ephemeral or None"
+        session_execution, "ephemeral_system_prompt=combined_ephemeral or None"
     ):
         return drifted
     turn = SimpleNamespace(
@@ -351,8 +365,13 @@ def context_reaches_the_system_side_only(_factory) -> str | None:
     messages = [{"role": "user", "content": "hello", "api_content": "hello"}]
     before = json.dumps(messages, sort_keys=True)
     api_messages, _effective = turn_context.build_api_messages(
-        agent, messages, current_turn_user_idx=0, ext_prefetch_cache=None,
-        plugin_user_context=None, moa_config=None, active_system_prompt="the cached prompt",
+        agent,
+        messages,
+        current_turn_user_idx=0,
+        ext_prefetch_cache=None,
+        plugin_user_context=None,
+        moa_config=None,
+        active_system_prompt="the cached prompt",
     )
     system = api_messages[0] if api_messages else {}
     if system.get("role") != "system" or CONTEXT_CANARY not in str(system.get("content")):
@@ -379,17 +398,25 @@ def platform_tools_reach_the_model(factory, manifest: dict) -> str | None:
 
     if "post_tool_call" not in VALID_HOOKS:
         return "Hermes no longer has the post_tool_call hook the plugin reports activity from"
-    if any(entry["key"].startswith(("platform_toolsets", "tools.")) for entry in
-           manifest.get("config", [])):
+    if any(
+        entry["key"].startswith(("platform_toolsets", "tools."))
+        for entry in manifest.get("config", [])
+    ):
         return "the manifest writes a toolset setting, which replaces the operator's selection"
     adapter = factory(PlatformConfig(enabled=True))
     tools = adapter._tools  # noqa: SLF001 — the plugin's own registrar, as the gateway built it
     plugin = sys.modules[type(tools).__module__]
     adapter._companion_features = frozenset({plugin.FEATURE_TOOLS})  # noqa: SLF001
-    tools.apply({PROBE_TOOL: {
-        "name": PROBE_TOOL, "description": "Contract probe.", "permission": "allow",
-        "parameters": {"type": "object", "properties": {}},
-    }})
+    tools.apply(
+        {
+            PROBE_TOOL: {
+                "name": PROBE_TOOL,
+                "description": "Contract probe.",
+                "permission": "allow",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        }
+    )
     entry = registry.get_entry(PROBE_TOOL)
     if entry is None or entry.toolset != plugin.TOOLSET:
         return "the plugin's context registered no tool in the uffici toolset"
@@ -475,6 +502,7 @@ def memory_provider_is_the_plugin(factory, manifest: dict) -> str | None:
     manager.add_provider(provider)
     plugin_memory.publish(bridge)
     try:
+
         def turn() -> None:
             set_session_vars(platform="uffici", chat_id="probe-conversation")
             seen["answer"] = manager.prefetch_all("what was decided?", session_id="probe")
@@ -510,7 +538,9 @@ def builtin_memory_is_off(manifest: dict) -> str | None:
     if drifted := read_site(turn_context, "and agent._memory_store):"):
         return drifted
     agent = SimpleNamespace(
-        _memory_nudge_interval=1, valid_tool_names={"memory"}, _memory_store=None,
+        _memory_nudge_interval=1,
+        valid_tool_names={"memory"},
+        _memory_store=None,
         _turns_since_memory=5,
     )
     if turn_context._tick_memory_nudge(agent) is not False:  # noqa: SLF001
@@ -536,7 +566,12 @@ def prefetch_lands_fenced_on_the_user_side(factory) -> str | None:
         )
     # A real hit, from the wire's own golden — never a URN spelled here.
     golden = (
-        Path(plugin_memory.__file__).parent / "wire" / "v1" / "golden" / "ops" / "valid"
+        Path(plugin_memory.__file__).parent
+        / "wire"
+        / "v1"
+        / "golden"
+        / "ops"
+        / "valid"
         / "memory.recall.result-levels.json"
     )
     hit = {**json.loads(golden.read_text())["hits"][0], "text": MEMORY_CANARY}
@@ -559,8 +594,13 @@ def prefetch_lands_fenced_on_the_user_side(factory) -> str | None:
     )
     messages = [{"role": "user", "content": "hello"}]
     api_messages, _effective = turn_context.build_api_messages(
-        agent, messages, current_turn_user_idx=0, ext_prefetch_cache=rendered,
-        plugin_user_context=None, moa_config=None, active_system_prompt="the cached prompt",
+        agent,
+        messages,
+        current_turn_user_idx=0,
+        ext_prefetch_cache=rendered,
+        plugin_user_context=None,
+        moa_config=None,
+        active_system_prompt="the cached prompt",
     )
     users = [m for m in api_messages if m.get("role") == "user"]
     systems = [m for m in api_messages if m.get("role") == "system"]
@@ -600,7 +640,6 @@ def drift_reads_hermes_own_config(factory, manifest: dict) -> str | None:
     import importlib
     import tempfile
 
-    import yaml
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.memory_tool import get_builtin_memory_store_flags
 
@@ -614,7 +653,7 @@ def drift_reads_hermes_own_config(factory, manifest: dict) -> str | None:
 
     def read(config: dict) -> dict:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home:
-            Path(home, "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+            Path(home, "config.yaml").write_text(as_yaml(config), encoding="utf-8")
             token = set_hermes_home_override(home)
             try:
                 return drift.read_drift("uffici")
@@ -670,8 +709,7 @@ def freshness_is_hermes_routing(factory) -> str | None:
     support = importlib.import_module(f"{package}.support")
     if support.harness_support(hermes_version).get("supported") is not True:
         return (
-            f"the probe's Hermes {hermes_version} is outside the plugin's "
-            f"{support.SUPPORTED_RANGE}"
+            f"the probe's Hermes {hermes_version} is outside the plugin's {support.SUPPORTED_RANGE}"
         )
 
     if "touch_activity" not in inspect.signature(SessionStore.get_or_create_session).parameters:
@@ -850,8 +888,12 @@ def media_reaches_the_adapters_hooks(factory) -> str | None:
         event = SimpleNamespace(source=SimpleNamespace(chat_id="probe"))
         asyncio.run(
             adapter._deliver_media_attachments(  # noqa: SLF001 — Hermes's own delivery
-                event, [(str(pdf), False), (str(png), False)], [],
-                force_document_attachments=False, human_delay=0.0, metadata={},
+                event,
+                [(str(pdf), False), (str(png), False)],
+                [],
+                force_document_attachments=False,
+                human_delay=0.0,
+                metadata={},
                 record_delivery=results.append,
             )
         )
@@ -877,7 +919,6 @@ def workspace_is_a_media_root(manifest: dict) -> str | None:
     import os
     import tempfile
 
-    import yaml
     from gateway.platforms.base import validate_media_delivery_path
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -893,7 +934,7 @@ def workspace_is_a_media_root(manifest: dict) -> str | None:
         Path(media_dir).mkdir(parents=True)
         config = configured(manifest)
         config.setdefault("gateway", {})["strict"] = True
-        Path(home, "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+        Path(home, "config.yaml").write_text(as_yaml(config), encoding="utf-8")
         inside, outside = Path(media_dir, "made.pdf"), Path(home, "elsewhere.pdf")
         for path in (inside, outside):
             path.write_bytes(b"%PDF-1.7")
@@ -916,6 +957,136 @@ def workspace_is_a_media_root(manifest: dict) -> str | None:
     return None
 
 
+def brief_passes_admission(factory) -> str | None:
+    """A brief is ADMITTED by Hermes's durable queue, and the field it closes by survives.
+
+    Hermes 0.23 admits every inbound message into its session authority's queue and
+    refuses one whose shape it does not accept — then answers "Hermes refused this
+    message" instead of running the turn. A brief carries its request as ``message_id``
+    and no ``metadata`` (#3124); this runs Hermes's own admission rule on that shape, and
+    pins that ``message_id`` is a field the queue keeps.
+    """
+    import gateway.session_envelope as envelope
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageEvent, MessageType
+
+    adapter = factory(PlatformConfig(enabled=True))
+    brief = MessageEvent(
+        text="a member's message",
+        message_type=MessageType.TEXT,
+        source=adapter.build_source(chat_id="probe", chat_type="dm"),
+        message_id="req_probe",
+        channel_prompt="the organization's context",
+        channel_context="why the agent is asked",
+        allow_gateway_control=False,
+    )
+    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False))
+    if clause := envelope._event_clause(runner, brief, None, False):  # noqa: SLF001
+        return f"Hermes's admission refuses the plugin's brief ({clause})"
+    if "message_id" not in envelope._EVENT_FIELDS:  # noqa: SLF001
+        return "Hermes's queue no longer keeps message_id, which names the brief's request"
+    with_metadata = dataclasses.replace(brief, metadata={"uffici_request_id": "req_probe"})
+    if envelope._event_clause(runner, with_metadata, None, False) != "metadata":  # noqa: SLF001
+        return "Hermes's metadata rule moved: re-read what the queue admits before relying on it"
+    return None
+
+
+def queue_reconciles_through_hermes_own_paths(factory) -> str | None:
+    """What the plugin reads and calls on Hermes's durable input queue (#3124).
+
+    A brief's ``message_id`` names its queue row; a restart turns a started row
+    ``unknown`` (never re-run) and leaves a ``queued`` one to run again; and the plugin
+    discards a lost turn through the function Hermes's own ``/discard`` calls. Each read
+    is pinned here, so a Hermes that reshapes its queue fails this probe instead of
+    answering a person twice or pausing their conversation.
+    """
+    import gateway.session_authority as authority_module
+    import gateway.slash_commands_session as commands
+    import hermes_state_runtime as runtime
+    from gateway.config import PlatformConfig
+    from gateway.session import SessionStore
+    from gateway.session_authorities import active_authority
+
+    adapter = factory(PlatformConfig(enabled=True))
+    package = type(adapter).__module__.rsplit(".", 1)[0]
+    queue = sys.modules[f"{package}.hermes_queue"]
+    for module, line in (
+        (
+            authority_module,
+            "request_id = str(payload['native_text_v1']['event']['message_id'] "
+            "or uuid.uuid4().hex)",
+        ),
+        (
+            runtime,
+            "UPDATE session_admissions SET status='unknown' WHERE status='started' "
+            "AND owner_epoch!=?",
+        ),
+        (commands, "lost = [row for row in rows if row['status'] == 'unknown']"),
+        # It RETURNS its confirmation for the command to reply with; it never sends it, so a
+        # discard the plugin makes posts nothing into the conversation.
+        (
+            commands,
+            'return t("gateway.discard.done", count=done) if done else '
+            't("gateway.discard.nothing")',
+        ),
+    ):
+        if drifted := read_site(module, line):
+            return drifted
+    if list(inspect.signature(commands.discard_lost_turns).parameters) != [
+        "authority",
+        "session_id",
+    ]:
+        return "Hermes's discard_lost_turns takes other arguments than the plugin passes"
+    if "pending_only" not in inspect.signature(runtime.list_session_admissions).parameters:
+        return "Hermes's list_session_admissions no longer filters pending rows"
+    if not callable(getattr(SessionStore, "peek_session_id", None)):
+        return "Hermes's session store has no peek_session_id for the plugin to read"
+    if not callable(getattr(authority_module.SessionAuthority, "logical_owner", None)):
+        return "Hermes's session authority has no logical_owner"
+    if not callable(active_authority):
+        return "Hermes no longer exposes active_authority"
+    if queue.request_of(queue.delivery_id("req_probe", queue.new_delivery_token())) != "req_probe":
+        return "a delivery's message_id no longer names its request"
+    return None
+
+
+def queue_notices_are_never_posted(factory) -> str | None:
+    """Hermes's notices about its queue are told apart by the plugin, never posted (#3124).
+
+    Runs Hermes's OWN producers: ``pause_notice`` for each reason it pauses with, and its
+    queue-full reply; the refusal and dropped sentences are f-strings inside a method no
+    probe can call, so their lines are pinned.
+    """
+    import gateway.session_ingress as ingress
+    from gateway.config import PlatformConfig
+
+    plugin = sys.modules[type(factory(PlatformConfig(enabled=True))).__module__]
+    if plugin.hermes_queue_notice(ingress.QUEUE_FULL_REPLY) != "unanswered":
+        return "Hermes's queue-full reply would reach the person as the agent's answer"
+    for reason, kind in (
+        ("runtime_draining", "saved"),
+        ("session_busy", "saved"),
+        ("unknown_execution", "unanswered"),
+        ("route", "unanswered"),
+    ):
+        live = SimpleNamespace(
+            pause_notified=False,
+            source=SimpleNamespace(platform=SimpleNamespace(value="uffici")),
+        )
+        text = ingress.pause_notice(
+            SimpleNamespace(sessions={"probe": live}), SimpleNamespace(session_id="probe"), reason
+        )
+        if plugin.hermes_queue_notice(text or "") != kind:
+            return f"Hermes's {reason} pause notice would reach the person as the agent's answer"
+    for line in (
+        "return (f'⚠️ Hermes refused this message ({named}), so it was not saved '",
+        "return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '",
+    ):
+        if drifted := read_site(ingress, line):
+            return drifted
+    return None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("usage: python - <manifest json>", file=sys.stderr)
@@ -925,7 +1096,10 @@ def main(argv: list[str]) -> int:
     checks = [
         ("follow-up hooks", lambda: follow_up_hooks_reach_the_adapter(factory)),
         ("restart notice", lambda: restart_notice_is_off(factory)),
+        ("brief admission", lambda: brief_passes_admission(factory)),
         ("startup resume", lambda: startup_resume_reaches_the_adapter(factory)),
+        ("queue reconcile", lambda: queue_reconciles_through_hermes_own_paths(factory)),
+        ("queue notices", lambda: queue_notices_are_never_posted(factory)),
         ("restart cut", lambda: restart_cut_is_hermes_own_record(factory)),
         ("working line", lambda: working_line_is_off(manifest)),
         ("memory-review note", lambda: memory_note_is_off(manifest)),

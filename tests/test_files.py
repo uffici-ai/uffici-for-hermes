@@ -288,7 +288,7 @@ def test_send_document_uploads_and_the_post_carries_the_attachment(
         await adapter.send(CONVERSATION, "Here is the report.")
         result = await adapter.send_document(CONVERSATION, str(report))
         await adapter.on_processing_complete(
-            adapter_module.MessageEvent(text="x", metadata={"uffici_request_id": REQUEST}),
+            adapter_module.MessageEvent(text="x", message_id=REQUEST),
             ProcessingOutcome.SUCCESS,
         )
         return result, wire, tunnel
