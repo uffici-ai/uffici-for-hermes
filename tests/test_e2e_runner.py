@@ -179,6 +179,52 @@ def test_the_fixture_comes_from_the_same_release(
     assert json.loads((tmp_path / "ci" / "wave1.json").read_text()) == {"v": 1}
 
 
+def test_the_fixture_is_readable_by_the_companions_user(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 🔴 #3134: the runner's scratch directory is `0700` and the runner's own; the
+    # companion image runs as 65532 and, on a Linux engine, could not open the
+    # bind-mounted fixture — the pod died before Hermes joined it. The fixture is
+    # published release content, so every user may read it.
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    monkeypatch.setattr(e2e, "fetch", lambda url: b'{"v": 1}')
+    e2e.fetch_fixture("0.3.0", scratch)
+    for directory in (scratch, scratch / "ci"):
+        assert directory.stat().st_mode & 0o005 == 0o005, oct(directory.stat().st_mode)
+    assert (scratch / "ci" / "wave1.json").stat().st_mode & 0o004, (
+        "the fixture is not world-readable"
+    )
+
+
+def test_a_pod_that_will_not_start_shows_the_companions_own_words(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 🔴 #3134: the reason was only in the companion's log, which nobody printed.
+    seen = {}
+
+    def fake_docker(*args: str, env: dict[str, str]):
+        seen["token"] = env["UFFICI_WIRE_TOKEN"]
+        if args[0] == "up":
+            return e2e.subprocess.CompletedProcess(args, 1, "", "runc create failed")
+        if args[0] == "logs":
+            return e2e.subprocess.CompletedProcess(
+                args,
+                0,
+                f"uffici: opening the fixture script: permission denied {seen['token']}",
+                "",
+            )
+        return e2e.subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(e2e, "docker", fake_docker)
+    with pytest.raises(e2e.Failure) as caught:
+        e2e.run("0.3.0", tmp_path)
+    assert caught.value.reason == "the pod would not start"
+    assert "runc create failed" in caught.value.detail
+    assert "opening the fixture script: permission denied" in caught.value.detail
+    assert seen["token"] not in caught.value.detail
+
+
 def test_a_fixture_that_is_not_json_is_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
