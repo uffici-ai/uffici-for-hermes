@@ -542,6 +542,13 @@ def fetch_fixture(version: str, into: Path) -> None:
     target = into / "ci" / "wave1.json"
     target.parent.mkdir(parents=True)
     target.write_bytes(body)
+    # 🔴 Readable by every user (#3134): the scratch directory is `0700` and this
+    # runner's, the companion image runs as 65532, and a Linux engine enforces the
+    # bind mount's ownership — an unreadable fixture kills the companion before
+    # Hermes joins its network. Published release content, never a secret.
+    for directory in (into, target.parent):
+        directory.chmod(0o755)
+    target.chmod(0o644)
 
 
 def docker(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -611,7 +618,19 @@ def run(version: str, fixture_dir: Path) -> None:
     try:
         up = docker("up", "-d", "--build", "model-mock", "companion", "hermes", env=env)
         if up.returncode != 0:
-            raise Failure("the pod would not start", redact(up.stdout + up.stderr, token))
+            # The reason is usually the companion's own last line (#3134), so it rides along.
+            logs = docker("logs", "--no-color", "companion", env=env)
+            raise Failure(
+                "the pod would not start",
+                redact(
+                    up.stdout
+                    + up.stderr
+                    + "\n── the companion said:\n"
+                    + logs.stdout
+                    + logs.stderr,
+                    token,
+                ),
+            )
 
         def container(service: str) -> str:
             return docker("ps", "-aq", service, env=env).stdout.strip().split("\n")[0]
