@@ -1,6 +1,6 @@
 # The Uffici plugin for Hermes.
 #
-# Developed in uffici-ai/velcra-platform under `uffici/`, mirrored to
+# Developed in Uffici's platform repository under `uffici/`, mirrored to
 # uffici-ai/uffici-for-hermes on a release tag (epic #1994, decisions 34-36).
 #
 # 🔴 Dependencies are confined to what Hermes itself ships. The plugin runs
@@ -12,7 +12,7 @@ name = "uffici-for-hermes"
 version = "0.0.0"
 description = "The Uffici platform adapter for the Hermes agent harness"
 readme = "README.md"
-requires-python = "==3.13.*"
+requires-python = "==3.14.*"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Uffici.AI" }]
@@ -42,6 +42,10 @@ packages = ["src/uffici_for_hermes"]
 
 [tool.ruff]
 line-length = 100
+# 🔴 3.13, not the 3.14 Hermes runs: the plugin must still IMPORT on an older Hermes so it
+# can connect and say that Hermes is unsupported (never refused, #2414). A 3.14 target
+# lets the formatter write PEP 758's unparenthesized `except A, B:`, a SyntaxError on 3.13.
+target-version = "py313"
 src = ["src", "tests"]
 
 [tool.ruff.lint]

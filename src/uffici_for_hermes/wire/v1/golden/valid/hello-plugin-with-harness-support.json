@@ -2,13 +2,13 @@
   "v": 1,
   "type": "hello",
   "harness": "hermes",
-  "harnessVersion": "0.21.5",
+  "harnessVersion": "0.23.0",
   "pluginVersion": "0.1.0",
   "token": "test-wire-token-example-not-a-secret-0000",
   "contextBudgetTokens": 48000,
   "processId": "7f3c9a1e5b2d4c60a8e1f0b3d2c4e6a8",
   "harnessSupport": {
-    "range": ">=0.21.5,<0.22",
+    "range": ">=0.23.0,<0.24",
     "supported": true
   }
 }

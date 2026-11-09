@@ -31,7 +31,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import build_session_key
 
-from . import log_shipping
+from . import hermes_queue, log_shipping
 from .budget import BudgetUnavailable, context_budget_tokens, resolve_share, resolve_window_tokens
 from .calls import CallClient
 from .context import render_context
@@ -185,6 +185,57 @@ HERMES_UNPROCESSED_REPLIES = frozenset(
     }
 )
 
+#: Hermes 0.22+'s notices from its durable input queue (``gateway/session_ingress.py``),
+#: sent through ``send`` like a reply. None is the agent's answer, and none is posted.
+#:
+#: 🔴 #3124. The first two say the message is SAVED and will be answered — the turn is still
+#: owed, so they change nothing: the close waits for Hermes's queue to run it. The rest say
+#: it will NOT be answered here, and a turn that produced only those closes as ``error``,
+#: like ``HERMES_UNPROCESSED_REPLIES``. Exact strings and prefixes, pinned against the real
+#: Hermes by ``dev/hermes_contract.py`` so a reworded release fails the probe.
+HERMES_SAVED_NOTICES = frozenset(
+    {
+        "⏳ Hermes is restarting — your message is saved and will be answered when it is back.",
+        "⏳ Your message is saved and will be answered when the work running in this "
+        "conversation finishes.",
+    }
+)
+HERMES_UNANSWERED_NOTICES = frozenset(
+    {
+        "⏳ Too many messages are already waiting in this conversation; send this again "
+        "after the current reply.",
+        "⏸️ This conversation is paused: a previous turn did not finish when Hermes "
+        "restarted, and only you know whether to send it again. Your message is saved. "
+        "Send /discard to drop the lost turn and continue (it is not re-run), or /reset to "
+        "start a fresh conversation.",
+    }
+)
+HERMES_UNANSWERED_NOTICE_PREFIXES = (
+    "⚠️ Hermes refused this message (",
+    "⚠️ Hermes did not answer this message (",
+    "⏸️ This conversation is paused: a queued message could not be re-authorized (",
+)
+
+
+def hermes_queue_notice(text: str) -> str | None:
+    """What one of Hermes's own replies says, when it is not the agent's answer.
+
+    ``"saved"``: the message waits in Hermes's queue and will be answered. ``"unanswered"``:
+    it will not be answered here — a queue refusal, or a never-processed "send it again"
+    (#2306). None: the agent's reply.
+    """
+    stripped = text.strip()
+    if stripped in HERMES_SAVED_NOTICES:
+        return "saved"
+    if (
+        stripped in HERMES_UNPROCESSED_REPLIES
+        or stripped in HERMES_UNANSWERED_NOTICES
+        or stripped.startswith(HERMES_UNANSWERED_NOTICE_PREFIXES)
+    ):
+        return "unanswered"
+    return None
+
+
 #: How often a close that found Hermes still working on the turn looks again.
 #:
 #: 🔴 The settle window above is a guess about when replies STOP; it cannot see a turn
@@ -329,6 +380,14 @@ class UfficiAdapter(BasePlatformAdapter):
         #: HERMES_UNPROCESSED_REPLIES. Bounded like the other per-request maps: forgotten
         #: with the request.
         self._unprocessed: set[str] = set()
+        #: Each request's deliveries into Hermes's durable queue (Hermes 0.22+): the
+        #: ``message_id`` its brief carried (``<requestId>~<token>``, a fresh token each time,
+        #: so a redelivery is never refused as a changed retry of a recorded id), and any
+        #: Hermes still held from before a restart.
+        self._deliveries: dict[str, set[str]] = {}
+        #: Requests whose close waits on Hermes's queue, not on a completion hook: nothing
+        #: says yet that the turn ended, so a disconnect never closes them `answered`.
+        self._provisional: set[str] = set()
         #: requests this adapter has already closed — by a cancel, or by a
         #: refusal after the fresh ack. 🔴 A second terminal frame for one of
         #: these would be a transition the companion's state machine does not
@@ -654,12 +713,15 @@ class UfficiAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _is_startup_resume(event: MessageEvent) -> bool:
-        """Hermes's synthesized resume: internal, empty, and no brief of ours."""
+        """Hermes's synthesized resume: internal, empty, and no brief of ours.
+
+        A brief always carries its request as ``message_id``; Hermes's resume carries none.
+        """
         return (
             bool(getattr(event, "internal", False))
             and getattr(event, "message_type", None) is MessageType.TEXT
             and not str(getattr(event, "text", "") or "").strip()
-            and not (getattr(event, "metadata", None) or {}).get("uffici_request_id")
+            and not str(getattr(event, "message_id", "") or "")
         )
 
     async def disconnect(self) -> None:
@@ -728,6 +790,8 @@ class UfficiAdapter(BasePlatformAdapter):
         self._settling.clear()
         self._settling_outcome.clear()
         self._unprocessed.clear()
+        self._provisional.clear()
+        self._deliveries.clear()
         self._pending_questions.clear()
         self._continues.clear()
         self._admitting.clear()
@@ -905,12 +969,20 @@ class UfficiAdapter(BasePlatformAdapter):
                 )
 
     def _is_multi_select(self, clarify_id: str) -> bool:
-        """Whether Hermes asked for several choices — read where its base adapter reads it."""
+        """Whether Hermes asked for several choices — read where its base adapter reads it.
+
+        Hermes 0.23 publishes ``get_pending`` for exactly this read; an older Hermes is read
+        through the store its base adapter used.
+        """
         try:
             from tools import clarify_gateway  # type: ignore[import-not-found]
 
-            with clarify_gateway._lock:  # noqa: SLF001 — Hermes's own base adapter reads it so
-                entry = clarify_gateway._entries.get(clarify_id)  # noqa: SLF001
+            get_pending = getattr(clarify_gateway, "get_pending", None)
+            if callable(get_pending):
+                entry = get_pending(clarify_id)
+            else:
+                with clarify_gateway._lock:  # noqa: SLF001 — read as Hermes's base adapter did
+                    entry = clarify_gateway._entries.get(clarify_id)  # noqa: SLF001
             return bool(getattr(entry, "multi_select", False))
         except Exception:  # noqa: BLE001 — a moved internal asks a single-choice question
             return False
@@ -975,13 +1047,17 @@ class UfficiAdapter(BasePlatformAdapter):
             # platform understands.
             logger.info("uffici: an empty reply was not posted", extra={"requestId": request_id})
             return SendResult(success=False, error="empty reply")
-        if text.strip() in HERMES_UNPROCESSED_REPLIES:
-            # 🔴 #2306: Hermes's "send it again" for a turn its agent never ran. Not an
-            # answer and not true here — the platform delivers the message again. Logged
-            # by length only, like every other text this plugin declines to post.
-            self._unprocessed.add(request_id)
+        notice = hermes_queue_notice(text)
+        if notice is not None:
+            # 🔴 Hermes's own word, not the agent's (#2306, #3124): never posted, and logged
+            # by length only, like every other text this plugin declines to post. A "saved"
+            # notice leaves the turn owed; an "unanswered" one makes it end as `error`, so
+            # the platform does not count the message as handled.
+            if notice == "unanswered":
+                self._unprocessed.add(request_id)
             logger.info(
-                "uffici: Hermes's never-processed reply was not posted (%d chars)",
+                "uffici: Hermes's %s notice was not posted (%d chars)",
+                notice,
                 len(text),
                 extra={"requestId": request_id},
             )
@@ -1018,7 +1094,7 @@ class UfficiAdapter(BasePlatformAdapter):
         # window restarts. Without this, a harness that streams several messages
         # around the completion hook would have the tail cut off.
         settling = self._settling.get(request_id)
-        if settling is not None:
+        if settling is not None and request_id not in self._provisional:
             settling.cancel()
             outcome = self._settling_outcome.get(request_id, ProcessingOutcome.SUCCESS)
             self._schedule_done(request_id, outcome)
@@ -1245,7 +1321,10 @@ class UfficiAdapter(BasePlatformAdapter):
         ended. ``empty`` is a real outcome and not a failure — an agent that had
         nothing to add said so, and the platform advances its offset either way.
         """
-        request_id = str((event.metadata or {}).get("uffici_request_id") or "")
+        # The brief's request is named by its ``message_id`` — the one field Hermes's durable
+        # queue carries through for us (0.23, ``gateway/session_envelope.py``): an event with
+        # ``metadata`` is refused at admission, so the request cannot ride there.
+        request_id = hermes_queue.request_of(getattr(event, "message_id", ""))
         if not request_id:
             return
         # 🔴 A turn that asked a question on the card settled its own request and was
@@ -1256,6 +1335,12 @@ class UfficiAdapter(BasePlatformAdapter):
             # Already terminal here: a cancel closed it, or the harness refused
             # it after the ack. The companion has moved on.
             return
+        if request_id not in self._conversation_of:
+            # 🔴 #3124: not a request this process opened — a turn Hermes ran from its own
+            # queue after a restart, before the companion handed the request over again.
+            # Closing it here would answer the companion for a brief it has not sent yet.
+            return
+        self._provisional.discard(request_id)
 
         # The files the turn delivered after its last reply go now, not after the settle.
         await self._flush_outbox(request_id)
@@ -1366,6 +1451,9 @@ class UfficiAdapter(BasePlatformAdapter):
             outcome = self._settling_outcome.get(request_id)
             if outcome != ProcessingOutcome.SUCCESS or request_id in self._closed:
                 continue
+            if request_id in self._provisional:
+                # Scheduled at admission, not by the turn's end: nothing says it finished.
+                continue
             posts = self._posts.get(request_id, 0)
             if not posts:
                 continue
@@ -1469,7 +1557,7 @@ class UfficiAdapter(BasePlatformAdapter):
             user_id=source.user_id,
             user_name=source.user_name,
             source=source,
-            message_id=request_id,
+            message_id=hermes_queue.delivery_id(request_id, hermes_queue.new_delivery_token()),
             # 🔴 The reason goes in the USER-side slot. ``channel_prompt`` is the
             # system-side one and is reserved for what is stable across a
             # session (decision 43); a per-turn line there would rewrite the
@@ -1501,11 +1589,16 @@ class UfficiAdapter(BasePlatformAdapter):
             # 🔴 False: this text is a transcript, and a member who types
             # "/stop" into a conversation must not be able to drive the harness.
             allow_gateway_control=False,
-            metadata={"uffici_request_id": request_id, "uffici_conversation_id": conversation_id},
+            # 🔴 No ``metadata`` (Hermes 0.23): Hermes admits every inbound message into its
+            # durable queue and REFUSES one carrying adapter metadata on any platform but
+            # WhatsApp — it answers "Hermes refused this message" instead of running the
+            # turn. The request rides in ``message_id`` above, the conversation as the
+            # source's ``chat_id``.
         )
 
         self._conversation_of[request_id] = conversation_id
         self._session_key_of[request_id] = self._session_key_for(source)
+        self._deliveries[request_id] = {str(event.message_id)}
         self._open_request[conversation_id] = request_id
         self._posts.setdefault(request_id, 0)
         self._known_conversation = conversation_id
@@ -1706,6 +1799,11 @@ class UfficiAdapter(BasePlatformAdapter):
         await self._admit_now(event, request_id)
 
     async def _admit_now(self, event: MessageEvent, request_id: str) -> None:
+        if not await self._reconcile_with_hermes_queue(event, request_id):
+            return
+        if request_id in self._closed or request_id not in self._conversation_of:
+            # A cancel took the request while the queue was read: nothing to hand over.
+            return
         try:
             admitted = await self.handle_message(event)
         except Exception as exc:  # noqa: BLE001 — classified, never re-raised at the wire
@@ -1725,6 +1823,99 @@ class UfficiAdapter(BasePlatformAdapter):
                 }
             )
             self._forget(request_id)
+            return
+        # 🔴 Hermes 0.22+ runs a brief it admits while the session is busy without the
+        # processing hooks (``dispatch_shared_busy``), so nothing would ever close it.
+        self._watch_hermes_queue(request_id)
+
+    async def _reconcile_with_hermes_queue(self, event: MessageEvent, request_id: str) -> bool:
+        """Settle Hermes's own record of this conversation before a brief goes in.
+
+        Returns whether the brief should be handed to Hermes. See ``hermes_queue``: a turn
+        Hermes lost at a restart is discarded (the companion's redelivery answers it, and a
+        paused conversation would answer only a pause notice), and a brief Hermes still holds
+        queued from before the restart is left to Hermes — handing it over again would answer
+        twice — with a close that waits for Hermes to run it.
+        """
+        queue = await hermes_queue.read_queue(self, self._session_key_of.get(request_id, ""))
+        if queue is None:
+            return True
+        if queue.lost:
+            # 🔴 Discarded even for a companion that does not redeliver: nothing else can
+            # resume a paused conversation here (a member's `/discard` is transcript, never a
+            # command), so the alternative is a conversation that answers nothing again.
+            discarded = await queue.discard_lost()
+            logger.info(
+                "uffici: %s %d turn(s) Hermes lost at a restart on conversation %s; %s",
+                "discarded" if discarded else "could not discard",
+                len(queue.lost),
+                self._conversation_of.get(request_id, ""),
+                "the companion redelivers what it still owes"
+                if FEATURE_REDELIVERY in self._companion_features
+                else "this companion does not redeliver, so a lost turn is not answered again",
+                extra={"requestId": request_id},
+            )
+        held = queue.held_deliveries(request_id)
+        if held:
+            logger.info(
+                "uffici: Hermes still holds request %s from before its restart and runs it "
+                "itself; not handed over twice",
+                request_id,
+                extra={"requestId": request_id},
+            )
+            self._deliveries.setdefault(request_id, set()).update(held)
+            self._watch_hermes_queue(request_id)
+            return False
+        return True
+
+    def _watch_hermes_queue(self, request_id: str) -> None:
+        """Close a request once Hermes's own queue has run it (Hermes 0.22+, #3124).
+
+        For a brief Hermes runs with no processing hooks: one it admitted while the session
+        was busy, or one it still held from before a restart. 🔴 Closed only on EVIDENCE —
+        Hermes's queue held the delivery and then let go of it — never on a timeout or an
+        unreadable queue, which leave the request owed (its completion hook, the platform's
+        deadline). A completion hook, when one fires, replaces this close.
+        """
+        if request_id in self._settling or request_id in self._closed:
+            return
+        self._provisional.add(request_id)
+        self._settling[request_id] = _spawn(self._close_when_hermes_ran(request_id))
+
+    async def _close_when_hermes_ran(self, request_id: str) -> None:
+        seen = False
+        checks = int(BUSY_MAX_SECONDS / BUSY_RECHECK_SECONDS) if BUSY_RECHECK_SECONDS > 0 else 1000
+        try:
+            for _ in range(checks):
+                if request_id in self._unprocessed or not self._still_answering(request_id):
+                    # Hermes said it will not answer, or a newer brief superseded this one.
+                    break
+                queue = await hermes_queue.read_queue(
+                    self, self._session_key_of.get(request_id, "")
+                )
+                if queue is None:
+                    return  # unreadable: no evidence either way, so the request stays owed
+                if queue.owes(self._deliveries.get(request_id, set())):
+                    seen = True
+                elif seen:
+                    break  # Hermes held it and let go of it: the turn ran
+                await asyncio.sleep(BUSY_RECHECK_SECONDS)
+            else:
+                logger.warning(
+                    "uffici: Hermes's queue never ran request %s; it stays owed",
+                    request_id,
+                    extra={"requestId": request_id},
+                )
+                return
+        except asyncio.CancelledError:
+            return  # a completion hook, or a cancel, took the close over
+        finally:
+            if self._settling.get(request_id) is asyncio.current_task():
+                self._settling.pop(request_id, None)
+        # The turn ended: from here it is an ordinary settle, which a disconnect may close.
+        self._provisional.discard(request_id)
+        if request_id not in self._closed:
+            self._schedule_done(request_id, ProcessingOutcome.SUCCESS)
 
     async def _on_release(self, frame: dict[str, Any]) -> None:
         """The platform says this agent may let go of a conversation (#2356).
@@ -1837,7 +2028,6 @@ class UfficiAdapter(BasePlatformAdapter):
             message_type=MessageType.COMMAND,
             source=self.build_source(chat_id=conversation_id, chat_type=CHAT_TYPE),
             allow_gateway_control=True,
-            metadata={"uffici_request_id": request_id},
         )
         try:
             await self.handle_message(stop)
@@ -1873,6 +2063,8 @@ class UfficiAdapter(BasePlatformAdapter):
         self._closed[request_id] = None
         self._unprocessed.discard(request_id)
         self._admitting.discard(request_id)
+        self._provisional.discard(request_id)
+        self._deliveries.pop(request_id, None)
         self._tools.forget(request_id)
         # A continuation into a request that is over leads nowhere (#2232): bounded by the
         # requests still open, never by the life of the process. Unless the request closed

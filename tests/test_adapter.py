@@ -22,6 +22,7 @@ from conftest import (
 from uffici_for_hermes import adapter as adapter_module
 from uffici_for_hermes.adapter import CHAT_TYPE, OPENER_HEADER, PLATFORM_NAME, UfficiAdapter
 from uffici_for_hermes.context import CONTEXT_OPEN
+from uffici_for_hermes.hermes_queue import request_of
 from uffici_for_hermes.wire import WIRE_V1
 
 
@@ -145,6 +146,11 @@ class FakeStore:
             resume_pending=reason is not None,
             resume_reason=reason,
         )
+
+    def peek_session_id(self, key: str) -> str | None:
+        """Hermes 0.23's read of a route's session id, nothing routed (``/discard`` uses it)."""
+        entry = self._entries.get(key)
+        return entry.session_id if entry else None
 
     def mark_every_session(self, reason: str) -> None:
         """What Hermes does to every running session when a drain times out."""
@@ -1775,6 +1781,38 @@ def test_every_brief_qualifies_for_hermess_follow_up_hooks() -> None:
     assert _followup_processing_hooks_apply(adapter, event) is True
 
 
+def test_a_brief_passes_hermess_admission() -> None:
+    """🔴 THE BRIEF HERMES REFUSED (#3124): Hermes 0.23 admits every inbound message into
+    its durable queue and refuses one carrying adapter ``metadata`` on any platform but
+    WhatsApp (``gateway/session_envelope.py``, ``_native_metadata``) — it answers "Hermes
+    refused this message" and never runs the turn. The brief carries its request as
+    ``message_id``, which the queue keeps, and no metadata at all."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        await adapter._on_frame(golden("brief"))
+        return adapter.handled[0]
+
+    event = run(scenario())
+    assert not event.metadata, "Hermes 0.23 refuses an inbound event that carries metadata"
+    assert request_of(event.message_id) == golden("brief")["requestId"]
+
+
+def test_a_turns_end_closes_the_request_named_by_its_message_id() -> None:
+    """The completion hook finds the request from the one field Hermes's queue carries."""
+
+    async def scenario():
+        zero_windows()
+        adapter, wire = build(FakeStore(), opener=golden("opener"))
+        await adapter._on_frame(golden("brief"))
+        await adapter.on_processing_complete(adapter.handled[0], ProcessingOutcome.SUCCESS)
+        await spin()
+        return wire
+
+    wire = run(scenario())
+    assert [f["requestId"] for f in wire.of_type("done")] == [golden("brief")["requestId"]]
+
+
 def test_a_superseded_request_stops_waiting_on_the_new_turn() -> None:
     """The busy state after a supersede is the NEW turn's; the old request must not wait
     on it, or it closes only when the whole conversation goes quiet."""
@@ -2177,7 +2215,7 @@ def test_hermess_startup_auto_resume_is_declined_when_the_companion_redelivers()
             text="",
             source=startup_resume().source,
             internal=True,
-            metadata={"uffici_request_id": "req_1"},
+            message_id="req_1",
         )
         await adapter.handle_message(brief)
         assert adapter.handled[-1] is brief

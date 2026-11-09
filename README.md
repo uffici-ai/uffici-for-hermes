@@ -43,13 +43,16 @@ Uffici conversation**, and what the session sends is the agent's answer.
 ## Requirements
 
 - A Hermes you run as a **gateway** (`hermes gateway`), since the plugin is a gateway
-  platform. The plugin is written against **Hermes 0.21.5** (commit `f97608f1`, release
-  `v2026.9.24`) and supports `>=0.21.5,<0.22`: its adapter uses those versions' platform
+  platform. The plugin is written against **Hermes 0.23.0** (commit `2bd378ed`, release
+  `v0.23.0`) and supports `>=0.23.0,<0.24`: its adapter uses those versions' platform
   interfaces. A Hermes outside the range still connects and answers, but may misbehave without
   an error, so the plugin logs a warning when it connects and `uffici doctor` shows the
   harness as not supported.
-- Python 3.13, which is what Hermes's own environment provides. The plugin runs inside that
+- Python 3.14, which is what Hermes's own environment provides. The plugin runs inside that
   environment and depends only on libraries Hermes already ships (`websockets`, `httpx`).
+- Hermes's `plugins.isolation` left at its default, `in_process`. The plugin registers a
+  gateway platform and a memory provider, and Hermes refuses both to a plugin it runs in a
+  separate host process.
 - The [Uffici companion](https://github.com/uffici-ai/uffici-companion) on the same machine
   or in the same pod.
 
@@ -57,8 +60,9 @@ Uffici conversation**, and what the session sends is the agent's answer.
 
 One line, on the machine that runs Hermes, installs the companion and this plugin together
 and pairs the companion with your agent. The Uffici portal gives it to you — when an
-administrator creates the agent with the harness Hermes, and on the agent's **Connect** tab —
-with your agents host and a single-use pairing code filled in:
+administrator creates the agent with the harness Hermes, and later on the
+agent's **Advanced** tab, under **Connection** (**Get the command**) — with your agents host and a single-use pairing code
+filled in. Run it as the user that runs Hermes, never with `sudo`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
@@ -66,11 +70,12 @@ curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/ins
 ```
 
 Nothing needs approving in the portal: the code was issued for that agent, and it works once
-and for ten minutes. Running a fresh line from the **Connect** tab on the same machine pairs it
-again and replaces its key.
+and for ten minutes. Running a fresh line from the same place on the same machine pairs it
+again and replaces its key. Requirements, upgrading, uninstalling and troubleshooting are in
+the [companion's guide](https://github.com/uffici-ai/uffici-companion#install).
 
-For this plugin, `uffici setup` fetches `uffici-for-hermes.tar.gz` from this repository's
-latest release, verifies it against the release's checksum list, and follows the install
+For this plugin, `uffici setup` fetches `uffici-for-hermes.tar.gz` from the release of this
+repository your agents gateway names (else the latest), verifies it against the release's checksum list, and follows the install
 manifest it carries ([uffici-plugin.json](uffici-plugin.json)): it copies the plugin into
 Hermes's plugin directory, switches the Uffici platform on and two of Hermes's own chat
 notices off (see [Hermes's own notices](#hermess-own-notices)) with `hermes config set`, makes
@@ -80,7 +85,8 @@ path into Hermes's environment file, and enables the plugin by name. Then restar
 gateway.
 
 To upgrade later, run `uffici upgrade` on the same machine: it moves the companion and this
-plugin to their latest releases and sets Hermes's configuration again. When Hermes runs as its
+plugin to the releases your agents gateway names (else the latest) and sets Hermes's
+configuration again. When Hermes runs as its
 own service (`hermes gateway install`, for Hermes's default home), it restarts it with
 `hermes gateway restart`. Otherwise it tells you to restart the gateway, because for a gateway
 started by hand that command would start a new one in the foreground.
@@ -88,12 +94,13 @@ started by hand that command would start a new one in the foreground.
 ### By hand
 
 Hermes loads a plugin from one directory that is both an importable package and the home of
-its manifest, so copy the **package** directory, not this repository's root, into the plugin
-directory of the Hermes home your gateway runs from, and enable it by the name in its
-manifest:
+its manifest. Download `uffici-for-hermes.tar.gz` from a release and verify it (see
+[Releases](#releases)); it unpacks to that directory, with its manifest stamped with the
+release's version. Unpack it into the plugin directory of the Hermes home your gateway runs
+from, and enable it by the name in its manifest:
 
 ```sh
-cp -r src/uffici_for_hermes "$HERMES_HOME/plugins/uffici-for-hermes"
+tar -xzf uffici-for-hermes.tar.gz -C "${HERMES_HOME:-$HOME/.hermes}/plugins"
 hermes plugins enable uffici-for-hermes
 hermes config set gateway.platforms.uffici.enabled true
 hermes config set display.platforms.uffici.long_running_notifications false
@@ -117,7 +124,13 @@ EOF
 ```
 
 `UFFICI_HERMES_MEDIA_DIR` is the [files workspace](#files): give the companion the same
-directory as its `UFFICI_WORKSPACE` (`uffici setup` records it for the companion on its own).
+directory as its `UFFICI_WORKSPACE`, in the companion service's environment (`uffici setup`
+records it for the companion on its own).
+
+**The agent never shows Online?** Run `uffici doctor`. If it reports no plugin attached, check
+that Hermes runs as a gateway (`hermes gateway`), that the gateway was restarted after the
+install, and that Hermes's `plugins.isolation` is `in_process` (its default): Hermes refuses a
+platform and a memory provider to a plugin it isolates in a separate process.
 
 In a pod, its loopback address and the token from a Secret instead. Every variable:
 
@@ -353,9 +366,14 @@ build attestation. Verify one before installing it by hand:
 
 ```sh
 cosign verify-blob --bundle uffici-for-hermes.tar.gz.sigstore.json \
-  --certificate-identity-regexp 'https://github.com/uffici-ai/uffici-for-hermes/' \
+  --certificate-identity-regexp '^https://github\.com/uffici-ai/uffici-for-hermes/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com uffici-for-hermes.tar.gz
+gh attestation verify uffici-for-hermes.tar.gz --repo uffici-ai/uffici-for-hermes
 ```
+
+Without cosign, the checksum list alone proves the tarball is intact (not where it came from):
+`sha256sum -c checksums.txt` (`shasum -a 256 -c checksums.txt` on macOS). Build attestations
+exist for the releases cut since this repository became public.
 
 ## Build and test from source
 
@@ -374,6 +392,9 @@ exercised end to end without an account or a model provider.
 This repository receives releases from Uffici.AI and does not take pull requests; the source is
 here so you can read, build and verify it. To report a problem or ask for a change, contact
 Uffici.AI through your account or [uffici.ai](https://uffici.ai).
+
+To report a security vulnerability, follow [SECURITY.md](SECURITY.md): privately, never in a
+public issue.
 
 ## License
 

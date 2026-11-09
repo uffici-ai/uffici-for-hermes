@@ -1,9 +1,9 @@
 # The local loop's own compose file.
 #
-# 🔴 It references NOTHING outside this child (`.claude/rules/uffici.md`): the
+# 🔴 It references NOTHING outside this child (the platform's rule for this tree): the
 # whole directory is exported to its own repository on a release tag, and a path
 # resolving above it would break there while passing here. The platform's
-# `infra/docker-compose.yml` INCLUDES this file — the platform may reference a
+# compose file INCLUDES this file — the platform may reference a
 # child; a child never references the platform.
 #
 # Both services are behind profiles in the including file, so `pnpm infra:up`
