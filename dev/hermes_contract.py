@@ -48,6 +48,11 @@ passed, so each is checked here against Hermes's own code:
   Hermes's own delivery hands to the adapter's ``send_document`` / ``send_image_file`` —
   never to the base class's failure notice. And the manifest makes the workspace a root
   Hermes's strict delivery policy accepts.
+- **A brief is withdrawn from Hermes's queue by Hermes's own cancel.** A cancelled brief still
+  queued, and one a previous process queued that the startup recovery would replay, are
+  cancelled through ``cancel_queued`` as the actor Hermes's messaging ``/stop`` uses; a row
+  records the epoch that admitted it; a reset leaves queued rows on their session; and a
+  reply is anchored to its brief's ``message_id``, which is how a withdrawn one is dropped.
 - **Hermes's own log lines reach a root handler.** The plugin ships them with one
   handler on the root logger: that works only while Hermes logs a turn through
   Python ``logging`` on a named logger that propagates, with the root at INFO or
@@ -1050,6 +1055,140 @@ def queue_reconciles_through_hermes_own_paths(factory) -> str | None:
     return None
 
 
+def queue_withdrawal_is_hermes_own_cancel(factory) -> str | None:
+    """What the plugin relies on to withdraw a brief from Hermes's queue (#3125).
+
+    A cancelled brief still queued, and a brief queued by a previous process that Hermes's
+    startup recovery would replay, are cancelled through ``SessionAuthority.cancel_queued``
+    with the actor Hermes's own messaging ``/stop`` builds for the same rows; a row records
+    the epoch that admitted it, which tells a previous process's from this one's; Hermes's
+    recovery binds the sessions its store lists by origin, as the plugin reads them; a reset
+    leaves a session's queued rows where they are; a reply carries its brief's
+    ``message_id`` as ``reply_to``, which is how a withdrawn brief's reply is told apart; and
+    the recovery starts only after every cold connect returned, inside whose bound the
+    plugin's withdrawal fits.
+    """
+    import dataclasses as dc
+
+    import gateway.platforms.base as base
+    import gateway.run_inbound as inbound
+    import gateway.run_runtime as runtime_module
+    import gateway.session_authority as authority_module
+    import hermes_state_runtime as runtime
+    from gateway.config import PlatformConfig
+    from gateway.session import SessionStore
+    from gateway.session_contract import SessionActor, SessionRef
+
+    adapter = factory(PlatformConfig(enabled=True))
+    package = type(adapter).__module__.rsplit(".", 1)[0]
+    queue = sys.modules[f"{package}.hermes_queue"]
+    cancel = authority_module.SessionAuthority.cancel_queued
+    if list(inspect.signature(cancel).parameters) != ["self", "actor", "ref", "admission_id"]:
+        return "Hermes's cancel_queued takes other arguments than the plugin passes"
+    if [f.name for f in dc.fields(SessionActor)] != [
+        "subject",
+        "profile_id",
+        "capabilities",
+        "transport_id",
+    ]:
+        return "Hermes's SessionActor changed shape"
+    if [f.name for f in dc.fields(SessionRef)] != ["profile_id", "session_id"]:
+        return "Hermes's SessionRef changed shape"
+    if frozenset({"session:submit", "session:control"}) != queue.CONTROL_CAPABILITIES:
+        return "the plugin's control actor is not the one the pinned line below builds"
+    for module, line in (
+        # The actor the plugin copies, in the messaging /stop that cancels a route's queued rows.
+        (inbound, f"actor = SessionActor('{queue.CONTROL_SUBJECT}', authority.profile_id,"),
+        (
+            inbound,
+            f"frozenset({{'session:submit', 'session:control'}}), '{queue.CONTROL_TRANSPORT}')",
+        ),
+        (inbound, "if row['status'] == 'queued' and row['principal_id'].startswith('messaging:'):"),
+        # The receipt cancel_queued asks for admits that actor on another principal's row.
+        (
+            authority_module,
+            "if not same_owner(row['principal_id'], actor.subject) and 'session:control' not in "
+            "actor.capabilities:",
+        ),
+        (authority_module, "self.epoch = epoch"),
+        # A queued row is what cancel_session_input makes terminal, and its epoch is recorded.
+        (
+            runtime,
+            "_CANCEL_QUEUED = \"UPDATE session_admissions SET status='terminal',"
+            "outcome='cancelled' WHERE admission_id=?\"",
+        ),
+        (
+            runtime,
+            "target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)",
+        ),
+        (
+            runtime_module,
+            "for entry in runner.session_store.list_sessions() if entry.origin is not None",
+        ),
+    ):
+        if drifted := read_site(module, line):
+            return drifted
+    # The withdrawal finishes inside the plugin's connect, so it must come before recovery:
+    # Hermes awaits every cold connect, then wires up (and recovers) — and a connect that
+    # outlives Hermes's bound is handed to the reconnect watcher, so the plugin's two waits
+    # must fit inside it.
+    import gateway.run as run_module
+    import gateway.run_adapters as adapters_module
+    import gateway.run_startup as startup
+
+    boot = inspect.getsource(startup)
+    connects = boot.find("_raw = await self._start_connect_pending(_pending_connects)")
+    wiring = boot.find("await self._start_finish_wiring(connected_count)")
+    if connects < 0 or wiring < 0 or connects > wiring:
+        return "Hermes no longer finishes every cold connect before it wires up and recovers"
+    if drifted := read_site(startup, "await recover_gateway_native_sessions(self)"):
+        return drifted
+    # And the plugin can READ the queue while its cold connect runs: the authority is
+    # registered before the runner starts, and the adapter is handed its runner and the
+    # session store before it is queued to connect (#3125 review). A Hermes that wires either
+    # later turns the connect's read into "not known", which still waits, but on the hello.
+    import gateway.run_bootstrap as bootstrap
+
+    launch = inspect.getsource(bootstrap)
+    runtime_up = launch.find("await initialize_gateway_runtime(runner)")
+    runner_up = launch.find(
+        "_early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)"
+    )
+    if runtime_up < 0 or runner_up < 0 or runtime_up > runner_up:
+        return "Hermes no longer registers its session authority before the adapters connect"
+    wired = boot.find("            self._wire_adapter_handlers(adapter)\n")
+    queued = boot.find("            _pending_connects.append((platform, platform_config, adapter))")
+    if wired < 0 or queued < 0 or wired > queued:
+        return "Hermes no longer wires an adapter's session store before its cold connect"
+    for module, line in (
+        (authority_module, "runner.session_authority = authority"),
+        (adapters_module, "adapter.gateway_runner = self"),
+        (adapters_module, "adapter.set_session_store(self.session_store)"),
+        (run_module, "self._init_session_store()"),
+    ):
+        if drifted := read_site(module, line):
+            return drifted
+    if drifted := read_site(adapters_module, "return bool(await task)"):
+        return drifted
+    plugin = sys.modules[type(adapter).__module__]
+    if run_module._PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT <= (  # noqa: SLF001
+        plugin.HELLO_WAIT_SECONDS + plugin.WITHDRAWAL_WAIT_SECONDS
+    ):
+        return "the plugin's hello and withdrawal waits no longer fit Hermes's connect bound"
+    if "rehome_queued_inputs" in inspect.getsource(SessionStore.reset_session):
+        return "Hermes's reset now moves queued rows to the new session: re-read #3125's case 3"
+    brief = SimpleNamespace(
+        message_id=queue.delivery_id("req_probe", queue.new_delivery_token()),
+        source=adapter.build_source(chat_id="probe", chat_type="dm"),
+        internal=False,
+        raw_message=None,
+        reply_anchor_override=None,
+    )
+    if base._reply_anchor_for_event(brief) != brief.message_id:  # noqa: SLF001
+        return "Hermes no longer anchors a reply to its brief's message_id"
+    return None
+
+
 def queue_notices_are_never_posted(factory) -> str | None:
     """Hermes's notices about its queue are told apart by the plugin, never posted (#3124).
 
@@ -1099,6 +1238,7 @@ def main(argv: list[str]) -> int:
         ("brief admission", lambda: brief_passes_admission(factory)),
         ("startup resume", lambda: startup_resume_reaches_the_adapter(factory)),
         ("queue reconcile", lambda: queue_reconciles_through_hermes_own_paths(factory)),
+        ("queue withdrawal", lambda: queue_withdrawal_is_hermes_own_cancel(factory)),
         ("queue notices", lambda: queue_notices_are_never_posted(factory)),
         ("restart cut", lambda: restart_cut_is_hermes_own_record(factory)),
         ("working line", lambda: working_line_is_off(manifest)),

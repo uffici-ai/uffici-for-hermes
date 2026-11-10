@@ -137,7 +137,12 @@ def test_is_connected_answers_false_without_a_token(monkeypatch: pytest.MonkeyPa
     from conftest import PlatformConfig
     from uffici_for_hermes.adapter import is_connected
 
-    for name in ("UFFICI_WIRE_TOKEN", "UFFICI_WIRE_TOKEN_FILE", "UFFICI_WIRE_SOCKET"):
+    for name in (
+        "UFFICI_WIRE_TOKEN",
+        "UFFICI_WIRE_TOKEN_FILE",
+        "UFFICI_WIRE_SOCKET",
+        "UFFICI_COMPANION_URL",
+    ):
         monkeypatch.delenv(name, raising=False)
     assert is_connected(PlatformConfig(enabled=True)) is False
 
@@ -147,4 +152,5 @@ def test_is_connected_answers_true_once_a_token_is_there(monkeypatch: pytest.Mon
     from uffici_for_hermes.adapter import is_connected
 
     monkeypatch.setenv("UFFICI_WIRE_TOKEN", "t" * 40)
+    monkeypatch.setenv("UFFICI_COMPANION_URL", "http://127.0.0.1:7411")
     assert is_connected(PlatformConfig(enabled=True)) is True

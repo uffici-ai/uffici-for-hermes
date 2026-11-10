@@ -417,6 +417,7 @@ def adapter_with(env: dict[str, str]) -> UfficiAdapter:
         PlatformConfig(enabled=True),
         get_env=lambda name: {
             "UFFICI_WIRE_TOKEN": "t",
+            "UFFICI_COMPANION_URL": "http://127.0.0.1:7411",
             "UFFICI_CONTEXT_WINDOW_TOKENS": "32000",
             **env,
         }.get(name),

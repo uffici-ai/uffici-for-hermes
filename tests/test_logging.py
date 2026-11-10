@@ -132,6 +132,7 @@ def test_no_transcript_content_and_no_token_reaches_a_log_line(caplog) -> None:
             PlatformConfig(enabled=True),
             get_env=lambda name: {
                 "UFFICI_WIRE_TOKEN": TOKEN,
+                "UFFICI_COMPANION_URL": "http://127.0.0.1:7411",
                 "UFFICI_CONTEXT_WINDOW_TOKENS": "32000",
             }.get(name),
             connect_fn=connect_fn,
@@ -237,6 +238,7 @@ def test_the_wire_token_is_in_no_logs_push_payload_at_any_level(caplog) -> None:
             PlatformConfig(enabled=True),
             get_env=lambda name: {
                 "UFFICI_WIRE_TOKEN": TOKEN,
+                "UFFICI_COMPANION_URL": "http://127.0.0.1:7411",
                 "UFFICI_CONTEXT_WINDOW_TOKENS": "32000",
             }.get(name),
             connect_fn=connect_fn,

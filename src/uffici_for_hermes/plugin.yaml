@@ -21,15 +21,15 @@ description: >
 author: Uffici.AI
 optional_env:
   - name: UFFICI_WIRE_SOCKET
-    description: "Unix socket the companion serves (default: $UFFICI_HOME/wire.sock)"
-    prompt: "Companion socket path (or empty for TCP)"
+    description: "Unix socket the companion serves (default: wire.sock beside UFFICI_WIRE_TOKEN_FILE)"
+    prompt: "Companion socket path (or empty for the one beside the token file)"
     password: false
   - name: UFFICI_COMPANION_URL
-    description: "Companion address when not using a socket (default: http://127.0.0.1:7411)"
+    description: "Companion TCP address, the pod shape, e.g. http://127.0.0.1:7411 (TCP only when set)"
     prompt: "Companion URL"
     password: false
   - name: UFFICI_COMPANION_ALLOW_REMOTE
-    description: "Set to 1 to allow a companion that is not on loopback (the pod shape)"
+    description: "Set to 1 to allow a companion that is not on loopback (another network namespace; not needed in a pod, where 127.0.0.1 is loopback)"
     prompt: "Allow a non-loopback companion? (1 or empty)"
     password: false
   - name: UFFICI_WIRE_TOKEN_FILE

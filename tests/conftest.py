@@ -801,11 +801,18 @@ def _restore_adapter_timings():
             "READY_TIMEOUT_SECONDS",
             "BUSY_RECHECK_SECONDS",
             "BUSY_MAX_SECONDS",
+            "HELLO_WAIT_SECONDS",
+            "WITHDRAWAL_WAIT_SECONDS",
         )
     }
+    # 🔴 The plugin's once-per-process state (#3125 review): every test is a fresh process,
+    # or the first test to hello sets it and every later one skips the withdrawal.
+    adapter_module._PROCESS["replays_withdrawn"] = False
+    adapter_module._UNCONFIGURED_SAID.clear()
     yield
     for name, value in saved.items():
         setattr(adapter_module, name, value)
+    adapter_module._PROCESS["replays_withdrawn"] = False
 
 
 @pytest.fixture(autouse=True)

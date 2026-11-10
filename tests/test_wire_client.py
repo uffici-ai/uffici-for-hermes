@@ -9,8 +9,8 @@ from uffici_for_hermes.calls import MAX_CALL_PAYLOAD_BYTES
 from uffici_for_hermes.wire_client import (
     ALLOW_REMOTE_ENV,
     BACKOFF_MAX_SECONDS,
-    DEFAULT_URL,
     SOCKET_ENV,
+    SOCKET_FILE,
     TOKEN_ENV,
     TOKEN_FILE_ENV,
     URL_ENV,
@@ -39,8 +39,32 @@ def test_a_named_socket_wins() -> None:
     assert address.kind == "socket" and address.socket_path == "/tmp/u/wire.sock"
 
 
-def test_the_default_is_the_companions_own_loopback_port() -> None:
-    assert resolve_address(env()).url == f"ws://{DEFAULT_URL.split('//')[1]}/v1/ring"
+def test_the_default_is_the_socket_beside_the_token_file() -> None:
+    """#3119: with no address configured the plugin dials the companion's own socket,
+    ``wire.sock`` beside its token file in ``$UFFICI_HOME`` — never a TCP port."""
+    address = resolve_address(env(**{TOKEN_FILE_ENV: "/home/someone/.uffici/wire-token"}))
+    assert address.kind == "socket"
+    assert address.socket_path == f"/home/someone/.uffici/{SOCKET_FILE}"
+    assert SOCKET_FILE == "wire.sock", "the companion's app.SocketFile"
+
+
+def test_no_configured_address_is_refused_never_a_guessed_tcp_port() -> None:
+    """🔴 #3119: a token in the environment and no address is a refusal that names every
+    switch. The old default, ``127.0.0.1:7411``, was a port any local user could bind
+    first and receive the wire token on."""
+    with pytest.raises(WireConfigError) as caught:
+        resolve_address(env(**{TOKEN_ENV: "t" * 40}))
+    for name in (SOCKET_ENV, TOKEN_FILE_ENV, URL_ENV):
+        assert name in str(caught.value)
+
+
+def test_tcp_only_when_an_address_is_configured() -> None:
+    """The pod shape keeps working: a configured loopback URL is dialled as TCP, even
+    beside a token file (the e2e pod sets both)."""
+    address = resolve_address(
+        env(**{URL_ENV: "http://127.0.0.1:7411", TOKEN_FILE_ENV: "/h/.uffici/wire-token"})
+    )
+    assert address.kind == "tcp" and address.url == "ws://127.0.0.1:7411/v1/ring"
 
 
 def test_a_remote_companion_is_refused_and_the_refusal_names_the_switch() -> None:
