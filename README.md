@@ -136,8 +136,8 @@ In a pod, its loopback address and the token from a Secret instead. Every variab
 
 | Variable | What it is |
 | --- | --- |
-| `UFFICI_WIRE_SOCKET` | The companion's Unix socket, `$UFFICI_HOME/wire.sock`. The normal shape on one machine. |
-| `UFFICI_COMPANION_URL` | The companion's loopback address instead, `http://127.0.0.1:7411` by default — the pod shape. Without `UFFICI_WIRE_SOCKET` this default is used, so set the socket on a machine. |
+| `UFFICI_WIRE_SOCKET` | The companion's Unix socket, `$UFFICI_HOME/wire.sock`. The normal shape on one machine. Unset, the plugin uses `wire.sock` beside `UFFICI_WIRE_TOKEN_FILE`, which is where the companion serves it. |
+| `UFFICI_COMPANION_URL` | The companion's loopback address instead, such as `http://127.0.0.1:7411` — the pod shape. TCP is used only when this is set: the plugin never dials a port nobody configured, because any local user who bound it first would receive the wire token. With no socket, no token file and no address, the plugin refuses to connect and says which to set. |
 | `UFFICI_COMPANION_ALLOW_REMOTE` | `1` to allow a companion that is not on loopback: a pod where both containers share a network namespace. |
 | `UFFICI_WIRE_TOKEN_FILE` | The companion's token file, `$UFFICI_HOME/wire-token`. One of this and `UFFICI_WIRE_TOKEN` is required; the plugin refuses to connect without a token. |
 | `UFFICI_WIRE_TOKEN` | The token itself, for a container that shares no filesystem with the companion. Source it from a Secret. |

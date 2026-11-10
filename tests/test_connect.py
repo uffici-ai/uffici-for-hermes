@@ -29,11 +29,21 @@ class FakeConnection:
         return gen()
 
 
-def adapter_with(**env) -> tuple[UfficiAdapter, list]:
-    opened: list = []
+#: The pod shape's configured address: every real caller names one (#3119), and a test
+#: that is about something else connects the way the e2e pod does.
+POD_URL = "http://127.0.0.1:7411"
+ADDRESS_ENV = ("UFFICI_WIRE_SOCKET", "UFFICI_COMPANION_URL", "UFFICI_WIRE_TOKEN_FILE")
 
-    async def connect_fn(_address):
+
+def adapter_with(*, address: bool = True, **env) -> tuple[UfficiAdapter, list]:
+    """An adapter whose wire is a fake; ``address=False`` configures no address at all."""
+    opened: list = []
+    if address and not any(name in env for name in ADDRESS_ENV):
+        env["UFFICI_COMPANION_URL"] = POD_URL
+
+    async def connect_fn(address):
         connection = FakeConnection()
+        connection.address = address
         opened.append(connection)
         return connection
 
@@ -70,6 +80,33 @@ def test_connect_declares_a_budget_derived_from_the_operators_window() -> None:
         assert hello["pluginVersion"] == installed == adapter_module.DEV_VERSION
 
     asyncio.run(scenario())
+
+
+def test_no_tcp_dial_happens_without_a_configured_address(tmp_path, caplog) -> None:
+    """🔴 #3119: with no address configured the plugin dials the companion's socket beside
+    the token file, and with no token file either it refuses — it never dials
+    ``127.0.0.1:7411``, a port any local user could bind first and so receive the wire
+    token and feed the harness forged rings."""
+    caplog.set_level(logging.ERROR)
+    token = tmp_path / "wire-token"
+    token.write_text("t" * 40, encoding="utf-8")
+
+    async def scenario(**env):
+        adapter, opened = adapter_with(address=False, UFFICI_CONTEXT_WINDOW_TOKENS="100000", **env)
+        connected = await adapter.connect()
+        for _ in range(50):
+            await asyncio.sleep(0)
+        await adapter.disconnect()
+        return connected, [connection.address for connection in opened]
+
+    connected, dialled = asyncio.run(scenario(UFFICI_WIRE_TOKEN_FILE=str(token)))
+    assert connected is True and dialled, "connect() never dialled the companion"
+    assert {address.kind for address in dialled} == {"socket"}, "a TCP address was dialled"
+    assert dialled[0].socket_path == str(tmp_path / "wire.sock")
+
+    connected, dialled = asyncio.run(scenario(UFFICI_WIRE_TOKEN="t" * 40))
+    assert connected is False and dialled == [], "dialled with no address configured"
+    assert "no wire address" in caplog.text
 
 
 def test_connect_refuses_without_a_token_and_the_refusal_names_the_variable(caplog) -> None:

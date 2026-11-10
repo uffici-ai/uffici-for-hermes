@@ -4,12 +4,16 @@ The stand-ins below are TRANSCRIBED from Hermes 0.23.0 (commit 2bd378ed):
 ``hermes_state_runtime.list_session_admissions`` (rows of ``session_admissions``, pending
 = ``queued`` / ``started`` / ``unknown``), ``gateway.session_authorities.active_authority``,
 the authority's ``logical_owner``, and ``gateway.slash_commands_session.discard_lost_turns``
-(every ``unknown`` row of the session resolved, never re-run). The real ones are run by
-``dev/hermes_contract.py``.
+(every ``unknown`` row of the session resolved, never re-run), the authority's
+``cancel_queued(actor, ref, admission_id)`` (a ``queued`` row becomes terminal, a ``started``
+one is refused ``stale_generation``) with ``gateway.session_contract``'s ``SessionActor`` and
+``SessionRef``, and each row's ``owner_epoch`` (the process that admitted it). The real ones
+are run by ``dev/hermes_contract.py``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sys
 import types
@@ -50,21 +54,59 @@ async def until(predicate, seconds: float = 5.0) -> None:
 CONVERSATION = golden("brief")["conversationId"]
 
 
+@dataclasses.dataclass(frozen=True)
+class SessionActor:
+    subject: str
+    profile_id: str
+    capabilities: frozenset
+    transport_id: str
+
+
+@dataclasses.dataclass(frozen=True)
+class SessionRef:
+    profile_id: str
+    session_id: str
+
+
+class RuntimeStoreError(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class FakeAuthority:
-    """One profile's session authority: its admissions table, and the discards it made."""
+    """One profile's session authority: its admissions table, and the discards and cancels it
+    made. ``epoch`` is this process's; a row admitted by an earlier one carries another."""
+
+    profile_id = "/opt/data"
+    epoch = 7
 
     def __init__(self) -> None:
         self.db = object()
         self.rows: dict[str, list[dict]] = {}
         self.discarded: list[str] = []
+        self.cancelled: list[tuple[SessionActor, SessionRef, str]] = []
 
     def logical_owner(self, session_id: str) -> str:
         return session_id
 
-    def add(self, session_id: str, request_id: str, status: str) -> dict:
-        row = {"request_id": request_id, "status": status, "admission_id": f"adm_{request_id}"}
+    def add(self, session_id: str, request_id: str, status: str, *, epoch: int = 7) -> dict:
+        row = {
+            "request_id": request_id,
+            "status": status,
+            "admission_id": f"adm_{request_id}",
+            "owner_epoch": epoch,
+        }
         self.rows.setdefault(session_id, []).append(row)
         return row
+
+    async def cancel_queued(self, actor, ref, admission_id):
+        rows = self.rows.get(ref.session_id, [])
+        row = next(r for r in rows if r["admission_id"] == admission_id)
+        if row["status"] != "queued":
+            raise RuntimeStoreError("stale_generation")
+        row["status"] = "terminal"
+        self.cancelled.append((actor, ref, admission_id))
 
 
 @pytest.fixture
@@ -90,6 +132,9 @@ def authority(monkeypatch) -> FakeAuthority:
     authorities.active_authority = lambda runner: getattr(runner, "session_authority", None)
     commands = types.ModuleType("gateway.slash_commands_session")
     commands.discard_lost_turns = discard_lost_turns
+    contract = types.ModuleType("gateway.session_contract")
+    contract.SessionActor, contract.SessionRef = SessionActor, SessionRef
+    monkeypatch.setitem(sys.modules, "gateway.session_contract", contract)
     monkeypatch.setitem(sys.modules, "hermes_state_runtime", runtime)
     monkeypatch.setitem(sys.modules, "gateway.session_authorities", authorities)
     monkeypatch.setitem(sys.modules, "gateway.slash_commands_session", commands)
@@ -455,3 +500,444 @@ def test_a_refusal_on_a_hookless_turn_closes_it_as_an_error_at_once(authority) -
         return wire
 
     assert [f["outcome"] for f in run(scenario()).of_type("done")] == ["error"]
+
+
+# ------------------------------------------------------------- the three leftovers (#3125)
+
+
+def _uffici_sessions(adapter, *session_ids: str) -> None:
+    """Hermes's session store lists its entries with their origin, as its recovery reads them."""
+    origin = types.SimpleNamespace(platform=types.SimpleNamespace(value="uffici"))
+    other = types.SimpleNamespace(platform=types.SimpleNamespace(value="telegram"))
+    adapter._session_store.list_sessions = lambda: [
+        *(types.SimpleNamespace(session_id=sid, origin=origin) for sid in session_ids),
+        types.SimpleNamespace(session_id="session_telegram", origin=other),
+    ]
+
+
+def test_a_withdrawn_brief_hermes_still_queues_is_cancelled_in_its_queue(authority) -> None:
+    """🔴 #3125 (1): a cancel stopped only a RUNNING turn; a brief Hermes had queued and not
+    started ran later and answered whatever request was open then. It is cancelled through
+    Hermes's own ``cancel_queued``, as the actor Hermes's messaging ``/stop`` uses."""
+
+    async def scenario():
+        adapter, _, session_id = with_queue(authority)
+        await adapter._on_frame(golden("brief"))
+        row = authority.add(session_id, adapter.handled[0].message_id, "queued")
+        await spin()
+        await adapter._on_frame(golden("cancel-superseded"))
+        await spin()
+        return row, session_id
+
+    row, session_id = run(scenario())
+    assert row["status"] == "terminal", "the queued brief was left to run"
+    [(actor, ref, admission_id)] = authority.cancelled
+    assert admission_id == row["admission_id"] and ref.session_id == session_id
+    assert actor.subject == hermes_queue.CONTROL_SUBJECT == "messaging-control"
+    assert actor.capabilities == frozenset({"session:submit", "session:control"})
+
+
+def test_a_reply_from_a_withdrawn_brief_never_reaches_a_later_request(authority) -> None:
+    """🔴 #3125 (1): whatever a withdrawn brief still produces — Hermes kept the row, a lost
+    turn paused the conversation — is dropped, never posted to the request open now, and its
+    end closes nothing."""
+
+    async def scenario():
+        adapter, wire, _ = with_queue(authority)
+        await adapter._on_frame(golden("brief"))
+        withdrawn = adapter.handled[0]
+        await adapter._on_frame(golden("cancel-superseded"))
+        await spin()
+        later = {**golden("brief"), "requestId": "req_later"}
+        await adapter._on_frame(later)
+        await spin()
+        late = await adapter.send(CONVERSATION, "the old answer", reply_to=withdrawn.message_id)
+        await adapter.on_processing_complete(withdrawn, ProcessingOutcome.SUCCESS)
+        own = await adapter.send(
+            CONVERSATION, "the new answer", reply_to=adapter.handled[-1].message_id
+        )
+        await spin(100)
+        return wire, late, own
+
+    wire, late, own = run(scenario())
+    assert late.success is False and own.success is True
+    assert [(f["requestId"], f["text"]) for f in wire.of_type("post")] == [
+        ("req_later", "the new answer")
+    ], "a withdrawn brief's reply was posted to a later request"
+    assert [f for f in wire.of_type("done") if f["requestId"] == "req_later"] == []
+
+
+@pytest.mark.parametrize("redelivers", [True, False])
+def test_a_brief_queued_before_the_restart_is_withdrawn_before_hermes_replays_it(
+    authority, redelivers: bool
+) -> None:
+    """🔴 #3125 (2): Hermes's startup recovery replays a brief still ``queued`` from the old
+    process, and a replay that beat the companion's redelivery answered nobody — then the
+    redelivered brief ran the model again. Once the companion says it redelivers, every such
+    row is cancelled through Hermes's own path; this process's own rows are kept, and so is
+    every row while the companion does not redeliver (Hermes's replay is all that answers)."""
+
+    async def scenario():
+        adapter, _, session_id = with_queue(authority)
+        _uffici_sessions(adapter, session_id)
+        replay = authority.add(session_id, f"{REQUEST}~0a1d0a1d", "queued", epoch=6)
+        mine = authority.add(session_id, "req_mine~1b2c3d4e", "queued")
+        foreign = authority.add(session_id, "a-hermes-wake", "queued", epoch=6)
+        features = ["redelivery"] if redelivers else []
+        await adapter._on_companion_hello({"v": 1, "type": "hello", "features": features})
+        await adapter._on_frame(golden("brief"))
+        await spin()
+        return adapter, replay, mine, foreign
+
+    adapter, replay, mine, foreign = run(scenario())
+    assert mine["status"] == "queued" and foreign["status"] == "queued"
+    if redelivers:
+        assert replay["status"] == "terminal", "Hermes was left to replay the old brief"
+        assert len(adapter.handled) == 1, "the redelivered brief must run, exactly once"
+    else:
+        assert replay["status"] == "queued" and authority.cancelled == []
+        assert adapter.handled == [], "a brief Hermes still holds was handed over twice"
+
+
+def test_a_reset_brief_sees_what_hermes_holds_on_the_session_it_would_leave(authority) -> None:
+    """🔴 #3125 (3): a ``resetSession`` brief reset Hermes's session BEFORE reading its queue,
+    so a delivery of the same request held on the old session was invisible and the brief
+    was handed over beside it — two answers. The queue is read first, and the session kept."""
+
+    async def scenario():
+        adapter, wire, session_id = with_queue(authority)
+        row = authority.add(session_id, f"{REQUEST}~0a1d0a1d", "started")
+        await adapter._on_frame({**golden("brief"), "resetSession": True})
+        await spin()
+        assert adapter.handled == [], "handed over beside the delivery Hermes holds"
+        assert adapter._session_store.resets == [], "the session Hermes holds it on was left"
+        assert (await adapter.send(CONVERSATION, "the card is moved")).success
+        row["status"] = "terminal"
+        await until(lambda: wire.of_type("done"))
+        return wire
+
+    wire = run(scenario())
+    assert [(f["requestId"], f["outcome"]) for f in wire.of_type("done")] == [(REQUEST, "answered")]
+
+
+def test_a_reset_brief_whose_held_delivery_ran_meanwhile_is_not_handed_over(authority) -> None:
+    """The delivery held when the reset brief arrived finished before the reconcile read the
+    queue again: Hermes ran it, so the request closes and nothing is handed over."""
+
+    async def scenario():
+        adapter, wire, session_id = with_queue(authority)
+        row = authority.add(session_id, f"{REQUEST}~0a1d0a1d", "started")
+        adapter_module.DONE_SETTLE_SECONDS = 0
+        original = adapter._reconcile_with_hermes_queue
+
+        async def finished_first(event, request_id):
+            row["status"] = "terminal"
+            return await original(event, request_id)
+
+        adapter._reconcile_with_hermes_queue = finished_first
+        await adapter._on_frame({**golden("brief"), "resetSession": True})
+        await until(lambda: wire.of_type("done"))
+        return adapter, wire
+
+    adapter, wire = run(scenario())
+    assert adapter.handled == []
+    assert [f["requestId"] for f in wire.of_type("done")] == [REQUEST]
+
+
+def test_the_queue_is_never_cancelled_on_without_hermess_session_contract(authority) -> None:
+    """A Hermes without ``gateway.session_contract`` cancels nothing, and says so."""
+    sys.modules.pop("gateway.session_contract")
+    queue = hermes_queue.HeldQueue(authority=authority, session_id="s", rows=[])
+    queue.rows.append(authority.add("s", "req~0a1d0a1d", "queued"))
+    assert run(queue.cancel({"req~0a1d0a1d"})) == set()
+    assert queue.rows[0]["status"] == "queued"
+
+
+def test_a_row_hermes_claimed_meanwhile_is_kept_and_reported_by_its_reason(
+    authority, caplog
+) -> None:
+    caplog.set_level(logging.INFO)
+    queue = hermes_queue.HeldQueue(authority=authority, session_id="s", rows=[])
+    row = authority.add("s", "req~0a1d0a1d", "queued")
+    queue.rows.append(dict(row))
+    row["status"] = "started"  # Hermes's drain claimed it between the read and the cancel
+    assert run(queue.cancel({"req~0a1d0a1d"})) == set()
+    assert "Hermes kept a queued brief (stale_generation)" in caplog.text
+
+
+def test_without_an_epoch_no_row_is_called_a_replay(authority) -> None:
+    queue = hermes_queue.HeldQueue(authority=types.SimpleNamespace(), session_id="s", rows=[])
+    queue.rows.append({"request_id": "req~0a1d0a1d", "status": "queued", "owner_epoch": 1})
+    assert queue.replayed() == set()
+
+
+def test_platform_queues_that_cannot_be_read_are_not_known(authority, caplog) -> None:
+    """None, never []: "nothing queued" lets the process skip the withdrawal for good."""
+    adapter, _, _ = with_queue(authority)
+    assert run(hermes_queue.read_platform_queues(adapter, "uffici")) is None
+    assert "input queues could not be read (AttributeError)" in caplog.text
+    adapter.gateway_runner.session_authority = None
+    assert run(hermes_queue.read_platform_queues(adapter, "uffici")) is None
+    # A Hermes with no durable queue has nothing queued: known, and empty.
+    sys.modules.pop("hermes_state_runtime")
+    assert run(hermes_queue.read_platform_queues(adapter, "uffici")) == []
+
+
+def test_withdrawn_deliveries_are_remembered_bounded_oldest_first() -> None:
+    adapter, _ = build(FakeStore({SESSION}))
+    for index in range(adapter_module.CLOSED_MEMORY + 3):
+        adapter._withdraw({hermes_queue.delivery_id(f"req_{index}", "0a1d0a1d")})
+    assert len(adapter._withdrawn) == adapter_module.CLOSED_MEMORY
+    assert hermes_queue.delivery_id("req_0", "0a1d0a1d") not in adapter._withdrawn
+    assert hermes_queue.delivery_id(f"req_{adapter_module.CLOSED_MEMORY + 2}", "0a1d0a1d") in (
+        adapter._withdrawn
+    )
+
+
+# ------------------------------------------------------------- review guards (#3125)
+
+
+class HelloOnCue:
+    """The companion's end of one wire connection: its hello arrives when ``cue`` is set."""
+
+    def __init__(self, features: list[str]) -> None:
+        import asyncio
+
+        self.cue = asyncio.Event()
+        self.features = features
+        self.sent: list[str] = []
+
+    async def send(self, raw: str) -> None:
+        self.sent.append(raw)
+
+    async def close(self) -> None:
+        return None
+
+    def __aiter__(self):
+        import asyncio
+        import json
+
+        async def frames():
+            await self.cue.wait()
+            yield json.dumps({"v": 1, "type": "hello", "features": self.features})
+            await asyncio.Event().wait()  # the connection stays up
+
+        return frames()
+
+
+def connecting_adapter(authority, features: list[str]):
+    """An adapter whose ``connect`` dials a companion that answers on cue."""
+    adapter, _, session_id = with_queue(authority)
+    adapter._get_env = {
+        "UFFICI_WIRE_TOKEN": "t" * 40,
+        "UFFICI_COMPANION_URL": "http://127.0.0.1:7411",
+        "UFFICI_CONTEXT_WINDOW_TOKENS": "100000",
+    }.get
+    connection = HelloOnCue(features)
+
+    async def connect_fn(_address):
+        return connection
+
+    adapter._connect_fn = connect_fn
+    adapter._log_handler = None  # no log push for the disconnect to finish
+    _uffici_sessions(adapter, session_id)
+    return adapter, connection, session_id
+
+
+def test_connect_returns_only_once_the_old_briefs_are_withdrawn(authority) -> None:
+    """🔴 #3125 review: Hermes's startup recovery replays queued rows once every adapter's
+    connect has returned. Withdrawn on the hello's own task alone, the replay could claim a
+    row first — ``cancel_queued`` refused ``stale_generation`` — and the model ran twice. The
+    connect now waits for the hello and the withdrawal, so recovery finds nothing to run."""
+    import asyncio
+
+    async def scenario():
+        adapter, connection, session_id = connecting_adapter(authority, ["redelivery"])
+        row = authority.add(session_id, f"{REQUEST}~0a1d0a1d", "queued", epoch=6)
+        connecting = asyncio.ensure_future(adapter.connect())
+        await spin()
+        assert not connecting.done(), "connected (so recovery may run) before the hello"
+        connection.cue.set()
+        assert await asyncio.wait_for(connecting, 5) is True
+        # Hermes's recovery, now: it claims the head of the queue if anything is queued.
+        claimable = [r for r in authority.rows[session_id] if r["status"] == "queued"]
+        await adapter.disconnect()
+        return row, claimable
+
+    row, claimable = run(scenario())
+    assert row["status"] == "terminal" and claimable == [], "recovery would replay the old brief"
+
+
+def test_a_hello_that_never_comes_holds_the_connect_only_as_long_as_its_wait(authority) -> None:
+    """Bounded: no hello leaves Hermes's replay to answer, and the connect still returns."""
+    import asyncio
+
+    adapter_module.HELLO_WAIT_SECONDS = 0.05
+
+    async def scenario():
+        adapter, _, session_id = connecting_adapter(authority, ["redelivery"])
+        row = authority.add(session_id, f"{REQUEST}~0a1d0a1d", "queued", epoch=6)
+        connected = await asyncio.wait_for(adapter.connect(), 5)
+        await adapter.disconnect()
+        return connected, row
+
+    connected, row = run(scenario())
+    assert connected is True and row["status"] == "queued"
+
+
+def test_nothing_to_withdraw_costs_the_connect_no_wait(authority) -> None:
+    import asyncio
+
+    adapter_module.HELLO_WAIT_SECONDS = 3600
+
+    async def scenario():
+        adapter, _, session_id = connecting_adapter(authority, ["redelivery"])
+        authority.add(session_id, "req_mine~1b2c3d4e", "queued")  # this process's own
+        connected = await asyncio.wait_for(adapter.connect(), 5)
+        await adapter.disconnect()
+        return connected
+
+    assert run(scenario()) is True
+    assert adapter_module._PROCESS["replays_withdrawn"] is True
+
+
+def test_the_withdrawal_runs_once_per_process(authority, monkeypatch) -> None:
+    """🔴 #3125 review: a previous process's rows exist only until the first withdrawal, so
+    a reconnect's hello neither reads every session's queue again nor makes every brief's
+    reconcile wait on it."""
+    reads: list[str] = []
+    real = hermes_queue.read_platform_queues
+
+    async def counted(adapter, platform):
+        reads.append(platform)
+        return await real(adapter, platform)
+
+    monkeypatch.setattr(hermes_queue, "read_platform_queues", counted)
+
+    async def scenario():
+        adapter, _, session_id = with_queue(authority)
+        _uffici_sessions(adapter, session_id)
+        hello = {"v": 1, "type": "hello", "features": ["redelivery"]}
+        await adapter._on_companion_hello(hello)
+        await adapter._replays_withdrawn()
+        late = authority.add(session_id, f"{REQUEST}~0a1d0a1d", "queued", epoch=6)
+        await adapter._on_companion_hello(hello)  # a reconnect
+        await adapter._replays_withdrawn()
+        return late
+
+    late = run(scenario())
+    assert reads == ["uffici"], "the withdrawal ran again on a reconnect"
+    assert late["status"] == "queued"
+
+
+def test_a_withdrawn_brief_that_asks_puts_no_card_on_a_later_request(authority) -> None:
+    """🔴 #3125 review: Hermes's clarify names a session, not a brief. A withdrawn brief that
+    runs anyway and asks would put its card on the request open now and close it
+    ``answered``; the running row of Hermes's queue says whose question it is."""
+
+    async def scenario():
+        adapter, wire, session_id = with_queue(authority)
+        adapter._companion_features = frozenset({"question"})
+        await adapter._on_frame(golden("brief"))
+        withdrawn = adapter.handled[0]
+        authority.add(session_id, withdrawn.message_id, "started")  # Hermes runs it regardless
+        await adapter._on_frame(golden("cancel-superseded"))
+        await adapter._on_frame({**golden("brief"), "requestId": "req_later"})
+        await spin()
+        result = await adapter.send_clarify(
+            CONVERSATION, "Which board?", ["Uffici board", "Trello"], "clarify_1", SESSION
+        )
+        await spin()
+        return wire, result
+
+    wire, result = run(scenario())
+    assert result.success is True, "a failure would send Hermes to its text fallback"
+    assert [f for f in wire.of_type("post") if f.get("question")] == []
+    assert [f for f in wire.of_type("done") if f["requestId"] == "req_later"] == []
+
+
+def test_withdrawing_an_answer_withdraws_the_turn_that_asked(authority) -> None:
+    """🔴 #3125 review: a turn that asked carries on under the request that brought the
+    answer, still anchoring its replies to its FIRST brief. Cancelling that request must
+    withdraw the first brief too, or the turn's replies reach whatever request opens next."""
+    from test_adapter import answer_brief, asked
+
+    async def scenario():
+        adapter, wire, brief, _, _ = await asked()
+        first = adapter.handled[0]
+        await adapter._on_frame(answer_brief("Trello"))
+        await adapter._on_frame(
+            {"v": 1, "type": "cancel", "requestId": "req_answer", "reason": "superseded"}
+        )
+        await adapter._on_frame({**golden("brief"), "requestId": "req_later"})
+        await adapter._on_frame({**golden("opener"), "requestId": "req_later"})
+        late = await adapter.send(
+            brief["conversationId"], "the old turn", reply_to=first.message_id
+        )
+        await spin()
+        return wire, late
+
+    wire, late = run(scenario())
+    assert late.success is False
+    assert [f["text"] for f in wire.of_type("post") if f["requestId"] == "req_later"] == []
+
+
+def test_an_unconfigured_platform_says_why_once(monkeypatch, caplog) -> None:
+    """#3119 review: Hermes skips a platform that is not connected; a silent False left no
+    line saying why. Said once, naming the variables and no value."""
+    from conftest import PlatformConfig
+
+    for name in ("UFFICI_WIRE_SOCKET", "UFFICI_COMPANION_URL", "UFFICI_WIRE_TOKEN_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("UFFICI_WIRE_TOKEN", "t" * 40)
+    assert adapter_module.is_connected(PlatformConfig(enabled=True)) is False
+    assert adapter_module.is_connected(PlatformConfig(enabled=True)) is False
+    lines = [r.getMessage() for r in caplog.records if "not connecting" in r.getMessage()]
+    assert len(lines) == 1 and "UFFICI_WIRE_SOCKET" in lines[0]
+    assert "t" * 40 not in caplog.text
+
+
+def test_an_unreadable_queue_at_connect_still_waits_for_the_withdrawal(authority) -> None:
+    """🔴 #3125 review: a queue that cannot be read during the cold connect is "not known",
+    never "nothing": the connect still waits for the hello and its withdrawal — which reads
+    the queue again, wired by then — or Hermes's recovery races it."""
+    import asyncio
+
+    async def scenario():
+        adapter, connection, session_id = connecting_adapter(authority, ["redelivery"])
+        row = authority.add(session_id, f"{REQUEST}~0a1d0a1d", "queued", epoch=6)
+        runner = adapter.gateway_runner
+        runner.session_authority = None  # not wired yet when the connect starts
+        connecting = asyncio.ensure_future(adapter.connect())
+        await spin()
+        assert not connecting.done(), "connected (so recovery may run) without knowing"
+        runner.session_authority = authority
+        connection.cue.set()
+        assert await asyncio.wait_for(connecting, 5) is True
+        await adapter.disconnect()
+        return row
+
+    assert run(scenario())["status"] == "terminal"
+
+
+def test_the_queue_enumeration_runs_off_the_event_loop(authority) -> None:
+    """🔴 #3125 review: the session store's listing and the owner lookups run in a worker
+    thread with the reads, never on the gateway's loop."""
+    import threading
+
+    seen: list[bool] = []
+
+    async def scenario():
+        adapter, _, session_id = with_queue(authority)
+        _uffici_sessions(adapter, session_id)
+        listing = adapter._session_store.list_sessions
+
+        def recorded():
+            seen.append(threading.current_thread() is threading.main_thread())
+            return listing()
+
+        adapter._session_store.list_sessions = recorded
+        return await hermes_queue.read_platform_queues(adapter, "uffici")
+
+    queues = run(scenario())
+    assert queues is not None and seen == [False], "the listing ran on the event loop"

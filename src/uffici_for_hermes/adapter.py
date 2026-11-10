@@ -19,6 +19,7 @@ and never carries an allowlist of its own.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -308,6 +309,19 @@ CAPABILITIES = {"prefetchAttachments": {"maxBytes": PREFETCH_MAX_BYTES}}
 #: How long Hermes's startup resume waits for the companion's hello before deciding.
 HELLO_WAIT_SECONDS = 10.0
 
+#: How long ``connect`` waits for the withdrawal of a previous process's queued briefs
+#: (#3125). With ``HELLO_WAIT_SECONDS`` it stays under Hermes's own connect bound (30 s,
+#: ``_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT``), pinned by ``dev/hermes_contract.py``: a
+#: connect past that is handed to Hermes's reconnect watcher and boot goes on without it.
+WITHDRAWAL_WAIT_SECONDS = 10.0
+
+#: What this PROCESS has done once (#3125 review): a previous process's rows exist only
+#: until the first withdrawal finishes, so every later connect and hello skips it.
+_PROCESS: dict[str, bool] = {"replays_withdrawn": False}
+
+#: The ``is_connected`` refusals already said, so a status display polling it says each once.
+_UNCONFIGURED_SAID: set[str] = set()
+
 #: What the wire admits for a question (`post.schema.json`): an id the answer can name,
 #: at most ten choices of at most 200 characters. A question outside these bounds is
 #: asked in plain text instead — never clipped, which would offer the person choices
@@ -388,6 +402,19 @@ class UfficiAdapter(BasePlatformAdapter):
         #: Requests whose close waits on Hermes's queue, not on a completion hook: nothing
         #: says yet that the turn ended, so a disconnect never closes them `answered`.
         self._provisional: set[str] = set()
+        #: Deliveries withdrawn from Hermes (#3125): a cancelled request's, and each brief from
+        #: a previous process cancelled before Hermes replayed it. A reply or a completion from
+        #: one is dropped, never posted to whatever request is open then. Kept across a
+        #: disconnect — Hermes's queue outlives a connection — and bounded, in insertion order,
+        #: like ``_closed``.
+        self._withdrawn: dict[str, None] = {}
+        #: request id → the deliveries Hermes held for it when its ``resetSession`` brief
+        #: arrived (#3125): the reset is skipped, and the reconcile counts them as held even
+        #: if Hermes finished running them in between.
+        self._held_before_reset: dict[str, set[str]] = {}
+        #: The withdrawal of a previous process's queued briefs, while it runs: a brief's
+        #: reconcile waits for it, so a row being cancelled is never read as held.
+        self._replay_withdrawal: Any = None
         #: requests this adapter has already closed — by a cancel, or by a
         #: refusal after the fresh ack. 🔴 A second terminal frame for one of
         #: these would be a transition the companion's state machine does not
@@ -565,7 +592,51 @@ class UfficiAdapter(BasePlatformAdapter):
             install(self._log_handler)
             self._log_flusher_obj = LogFlusher(self._log_handler, self._calls)
             self._log_flusher = _spawn(self._log_flusher_obj.run())
+        await self._withdraw_replays_before_recovery()
         return True
+
+    async def _withdraw_replays_before_recovery(self) -> None:
+        """Hold ``connect`` until a previous process's queued briefs are withdrawn (#3125).
+
+        🔴 Hermes's startup recovery replays queued rows only after every adapter's cold
+        connect has returned (``_start_impl``: the connects, then ``_start_finish_wiring``,
+        which runs ``recover_gateway_native_sessions``) — pinned by ``dev/hermes_contract.py``.
+        Withdrawn on the hello's own task alone, the replay could claim a row first and the
+        model ran twice. So the connect waits, bounded: for the hello, which says whether the
+        companion redelivers, then for the withdrawal. Nothing to withdraw, or a process that
+        already withdrew, costs no wait; a hello that never comes leaves Hermes's replay as the
+        only thing that answers (the startup resume decline's same rule). A queue that cannot
+        be read NOW is "not known", never "nothing" (#3125 review): the connect still waits,
+        and the hello's withdrawal reads it again.
+        """
+        if _PROCESS["replays_withdrawn"]:
+            return
+        queues = await hermes_queue.read_platform_queues(self, PLATFORM_NAME)
+        if queues is not None and not any(queue.replayed() for queue in queues):
+            _PROCESS["replays_withdrawn"] = True
+            return
+        try:
+            await asyncio.wait_for(self._hello_event().wait(), HELLO_WAIT_SECONDS)
+        except TimeoutError:
+            logger.warning(
+                "uffici: no companion hello within %.0fs; Hermes replays the briefs it still "
+                "holds from before its restart",
+                HELLO_WAIT_SECONDS,
+            )
+            return
+        task = self._replay_withdrawal
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), WITHDRAWAL_WAIT_SECONDS)
+        except TimeoutError:
+            logger.warning(
+                "uffici: withdrawing the briefs Hermes holds from before its restart took "
+                "over %.0fs; connecting without waiting for it",
+                WITHDRAWAL_WAIT_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 — never fatal to a connect
+            return
 
     async def _read_drift(self) -> dict[str, list[str]]:
         """The harness's drift for the hello (#2406), off the gateway's loop: reading
@@ -595,6 +666,15 @@ class UfficiAdapter(BasePlatformAdapter):
         )
         self._workspace = _workspace_of(frame, self._companion_features)
         self._hello_event().set()
+        if not _PROCESS["replays_withdrawn"]:
+            if FEATURE_REDELIVERY in self._companion_features:
+                # 🔴 #3125: before Hermes's startup recovery replays them — `connect` waits
+                # for this task — on its own task, because this runs inside the read loop.
+                self._replay_withdrawal = _spawn(self._withdraw_hermes_replays())
+            else:
+                # Hermes's replay is what answers them for this companion: nothing to do,
+                # now or on a later hello.
+                _PROCESS["replays_withdrawn"] = True
         self._memory.sync()
         self._tools.sync_rerun()
         self._files.sync()
@@ -792,6 +872,7 @@ class UfficiAdapter(BasePlatformAdapter):
         self._unprocessed.clear()
         self._provisional.clear()
         self._deliveries.clear()
+        self._held_before_reset.clear()
         self._pending_questions.clear()
         self._continues.clear()
         self._admitting.clear()
@@ -920,6 +1001,18 @@ class UfficiAdapter(BasePlatformAdapter):
         not fit the wire's bounds, or when nothing is open to ask on.
         """
         conversation_id = str(chat_id)
+        if await self._asked_by_withdrawn(session_key or ""):
+            # 🔴 #3125 review: a withdrawn brief that runs anyway must not put its question on
+            # the request open now and close it. Not posted, by any path (a failure would send
+            # Hermes to its text fallback through `send`), and its wait released so the turn
+            # ends: whatever it says next is anchored to the withdrawn brief and dropped.
+            logger.info(
+                "uffici: a question from a withdrawn brief was not asked (%d chars)",
+                len(question or ""),
+                extra={"conversationId": conversation_id},
+            )
+            asyncio.get_running_loop().call_soon(self._release_questions, str(session_key))
+            return SendResult(success=True)
         request_id = self._open_request.get(conversation_id)
         card = _question_card(question, choices, clarify_id, self._is_multi_select(clarify_id))
         if request_id is None or card is None or FEATURE_QUESTION not in self._companion_features:
@@ -938,6 +1031,10 @@ class UfficiAdapter(BasePlatformAdapter):
             "clarifyId": str(clarify_id),
             "sessionKey": str(session_key or self._session_key_of.get(request_id, "")),
             "askedBy": request_id,
+            # The turn's deliveries: it carries on under the request that brings the answer,
+            # still anchoring its replies to them, so withdrawing that request withdraws
+            # these too (#3125 review).
+            "deliveries": sorted(self._deliveries.get(request_id, set())),
         }
         await self._send({"v": 1, "type": "done", "requestId": request_id, "outcome": "answered"})
         # 🔴 The request is over; the TURN is not — it waits on the answer and speaks on
@@ -1020,6 +1117,8 @@ class UfficiAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         """One reply becomes one post on that conversation's open request."""
+        if self._from_withdrawn(reply_to):
+            return SendResult(success=False, error="withdrawn delivery")
         request_id = self._open_request.get(str(chat_id))
         if request_id is None:
             # 🔴 Dropped, never guessed. Posting to another request would put
@@ -1120,7 +1219,7 @@ class UfficiAdapter(BasePlatformAdapter):
         on — otherwise the file the agent said it attached vanishes. Hermes has already
         applied its own delivery policy to the path before calling here.
         """
-        return await self._deliver_file(chat_id, file_path, name=file_name)
+        return await self._deliver_file(chat_id, file_path, name=file_name, reply_to=reply_to)
 
     async def send_image_file(
         self,
@@ -1133,7 +1232,7 @@ class UfficiAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """An image Hermes delivers: the same attachment as a document. Hermes batches the
         images of a reply through ``send_multiple_images``, which calls this per file."""
-        return await self._deliver_file(chat_id, image_path)
+        return await self._deliver_file(chat_id, image_path, reply_to=reply_to)
 
     async def send_video(
         self,
@@ -1145,7 +1244,7 @@ class UfficiAdapter(BasePlatformAdapter):
         **kwargs: Any,
     ) -> SendResult:
         """A video is a file too: without this, Hermes's fallback notice is all that arrives."""
-        return await self._deliver_file(chat_id, video_path)
+        return await self._deliver_file(chat_id, video_path, reply_to=reply_to)
 
     async def send_voice(
         self,
@@ -1158,10 +1257,10 @@ class UfficiAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """An audio file is a file too: Hermes sends every audio ``MEDIA:`` file here on a
         platform other than Telegram."""
-        return await self._deliver_file(chat_id, audio_path)
+        return await self._deliver_file(chat_id, audio_path, reply_to=reply_to)
 
     async def _deliver_file(
-        self, chat_id: str, path: str, *, name: str | None = None
+        self, chat_id: str, path: str, *, name: str | None = None, reply_to: str | None = None
     ) -> SendResult:
         """Upload one file for the conversation's open request, and keep the attachment for
         the request's next post — or, when it could not be attached, a note naming the file.
@@ -1175,6 +1274,8 @@ class UfficiAdapter(BasePlatformAdapter):
         and the companion's fence — never Hermes's policy — decides what leaves the
         machine. A file anywhere else is a note: "not in the shared workspace".
         """
+        if self._from_withdrawn(reply_to):
+            return SendResult(success=False, error="withdrawn delivery")
         conversation_id = str(chat_id)
         request_id = self._open_request.get(conversation_id)
         if request_id is None:
@@ -1324,8 +1425,12 @@ class UfficiAdapter(BasePlatformAdapter):
         # The brief's request is named by its ``message_id`` — the one field Hermes's durable
         # queue carries through for us (0.23, ``gateway/session_envelope.py``): an event with
         # ``metadata`` is refused at admission, so the request cannot ride there.
-        request_id = hermes_queue.request_of(getattr(event, "message_id", ""))
+        message_id = str(getattr(event, "message_id", "") or "")
+        request_id = hermes_queue.request_of(message_id)
         if not request_id:
+            return
+        if message_id in self._withdrawn:
+            # 🔴 #3125: a delivery withdrawn from Hermes ran anyway; its end closes nothing.
             return
         # 🔴 A turn that asked a question on the card settled its own request and was
         # answered on a later one (#2232): its end closes THAT request.
@@ -1534,7 +1639,7 @@ class UfficiAdapter(BasePlatformAdapter):
             user_name=str(author.get("label") or "") or None,
         )
 
-        if frame.get("resetSession"):
+        if frame.get("resetSession") and not await self._held_through_reset(request_id, source):
             self._reset_session(source)
             fresh = True
         else:
@@ -1716,6 +1821,7 @@ class UfficiAdapter(BasePlatformAdapter):
             return False
 
         self._continues[pending["askedBy"]] = request_id
+        self._deliveries[request_id] = set(pending.get("deliveries") or ())
         self._conversation_of[request_id] = conversation_id
         self._session_key_of[request_id] = pending["sessionKey"]
         self._open_request[conversation_id] = request_id
@@ -1837,8 +1943,16 @@ class UfficiAdapter(BasePlatformAdapter):
         queued from before the restart is left to Hermes — handing it over again would answer
         twice — with a close that waits for Hermes to run it.
         """
+        await self._replays_withdrawn()
+        # 🔴 #3125: what Hermes held for this request before its `resetSession` brief kept the
+        # session, counted even if Hermes has run it since — handing it over would answer twice.
+        earlier = self._held_before_reset.pop(request_id, set())
         queue = await hermes_queue.read_queue(self, self._session_key_of.get(request_id, ""))
         if queue is None:
+            if earlier:
+                self._deliveries.setdefault(request_id, set()).update(earlier)
+                self._watch_hermes_queue(request_id)
+                return False
             return True
         if queue.lost:
             # 🔴 Discarded even for a companion that does not redeliver: nothing else can
@@ -1855,35 +1969,128 @@ class UfficiAdapter(BasePlatformAdapter):
                 else "this companion does not redeliver, so a lost turn is not answered again",
                 extra={"requestId": request_id},
             )
-        held = queue.held_deliveries(request_id)
-        if held:
+        held = queue.held_deliveries(request_id) - self._withdrawn.keys()
+        if held or earlier:
             logger.info(
                 "uffici: Hermes still holds request %s from before its restart and runs it "
                 "itself; not handed over twice",
                 request_id,
                 extra={"requestId": request_id},
             )
-            self._deliveries.setdefault(request_id, set()).update(held)
-            self._watch_hermes_queue(request_id)
+            self._deliveries.setdefault(request_id, set()).update(held | earlier)
+            # Held before the reset and no longer: Hermes ran it in between.
+            self._watch_hermes_queue(request_id, ran=not held)
             return False
         return True
 
-    def _watch_hermes_queue(self, request_id: str) -> None:
+    async def _held_through_reset(self, request_id: str, source: Any) -> bool:
+        """Whether Hermes still holds this request on the session a reset would leave (#3125).
+
+        🔴 The queue is read BEFORE the reset: Hermes's store leaves a session's queued rows on
+        the session they were admitted to, so a reset hid them from the reconcile and the
+        brief was handed over beside them — two answers. Held, the session is kept: the
+        request runs where Hermes already holds it.
+        """
+        await self._replays_withdrawn()
+        queue = await hermes_queue.read_queue(self, self._session_key_for(source))
+        held = (queue.held_deliveries(request_id) if queue else set()) - self._withdrawn.keys()
+        if not held:
+            return False
+        logger.info(
+            "uffici: Hermes still holds request %s on its session; the reset is not made",
+            request_id,
+            extra={"requestId": request_id},
+        )
+        self._held_before_reset[request_id] = held
+        return True
+
+    async def _withdraw_hermes_replays(self) -> None:
+        """Cancel every brief Hermes still holds QUEUED from a previous process (#3125).
+
+        Only once the companion says it redelivers: its record of each request is the one
+        answered, so Hermes's startup replay of the same brief would run the model twice — or,
+        run before the redelivery, answer a request nobody has open. A row Hermes has already
+        claimed runs where it is, and the redelivery finds it held. Never fatal: a queue that
+        cannot be read or cancelled on costs #3124's behaviour.
+        """
+        queues = await hermes_queue.read_platform_queues(self, PLATFORM_NAME)
+        if queues is None:
+            return  # unreadable: a later hello tries again
+        withdrawn = 0
+        for queue in queues:
+            replayed = queue.replayed()
+            if not replayed:
+                continue
+            cancelled = await queue.cancel(replayed)
+            self._withdraw(cancelled)
+            withdrawn += len(cancelled)
+        # 🔴 Once per process (#3125 review): a previous process's rows exist only until now,
+        # so a reconnect never reads every session's queue again.
+        _PROCESS["replays_withdrawn"] = True
+        if withdrawn:
+            logger.info(
+                "uffici: withdrew %d brief(s) Hermes still held from before its restart; the "
+                "companion redelivers them",
+                withdrawn,
+            )
+
+    async def _replays_withdrawn(self) -> None:
+        """Wait for the withdrawal of a previous process's briefs, if one is running."""
+        task = self._replay_withdrawal
+        if task is not None and not task.done():
+            with contextlib.suppress(Exception):
+                await asyncio.shield(task)
+
+    async def _asked_by_withdrawn(self, session_key: str) -> bool:
+        """Whether the turn Hermes runs on this session is a withdrawn brief (#3125 review).
+
+        Hermes's clarify names its session, not its brief: the brief is the row its queue has
+        ``started`` there. No withdrawal, or a queue that cannot be read, is no evidence.
+        """
+        if not self._withdrawn or not session_key:
+            return False
+        queue = await hermes_queue.read_queue(self, session_key)
+        return queue is not None and bool(queue.running() & self._withdrawn.keys())
+
+    def _withdraw(self, deliveries: set[str]) -> None:
+        """Remember deliveries withdrawn from Hermes, bounded (#3125)."""
+        for delivery in deliveries:
+            self._withdrawn[delivery] = None
+        while len(self._withdrawn) > CLOSED_MEMORY:
+            del self._withdrawn[next(iter(self._withdrawn))]
+
+    def _from_withdrawn(self, reply_to: Any) -> bool:
+        """Whether a reply or a file answers a delivery withdrawn from Hermes (#3125).
+
+        🔴 Dropped, never posted: Hermes anchors each reply to the brief that produced it, and
+        a withdrawn brief that ran anyway would otherwise post into whatever request is open
+        on its conversation now — an answer attributed to the wrong turn.
+        """
+        if reply_to is None or str(reply_to) not in self._withdrawn:
+            return False
+        logger.info(
+            "uffici: a reply from a withdrawn brief of request %s was dropped",
+            hermes_queue.request_of(reply_to),
+            extra={"requestId": hermes_queue.request_of(reply_to)},
+        )
+        return True
+
+    def _watch_hermes_queue(self, request_id: str, *, ran: bool = False) -> None:
         """Close a request once Hermes's own queue has run it (Hermes 0.22+, #3124).
 
         For a brief Hermes runs with no processing hooks: one it admitted while the session
         was busy, or one it still held from before a restart. 🔴 Closed only on EVIDENCE —
         Hermes's queue held the delivery and then let go of it — never on a timeout or an
         unreadable queue, which leave the request owed (its completion hook, the platform's
-        deadline). A completion hook, when one fires, replaces this close.
+        deadline). A completion hook, when one fires, replaces this close. ``ran``: Hermes was
+        already seen holding the delivery, so its letting go is the evidence.
         """
         if request_id in self._settling or request_id in self._closed:
             return
         self._provisional.add(request_id)
-        self._settling[request_id] = _spawn(self._close_when_hermes_ran(request_id))
+        self._settling[request_id] = _spawn(self._close_when_hermes_ran(request_id, seen=ran))
 
-    async def _close_when_hermes_ran(self, request_id: str) -> None:
-        seen = False
+    async def _close_when_hermes_ran(self, request_id: str, *, seen: bool = False) -> None:
         checks = int(BUSY_MAX_SECONDS / BUSY_RECHECK_SECONDS) if BUSY_RECHECK_SECONDS > 0 else 1000
         try:
             for _ in range(checks):
@@ -2002,6 +2209,16 @@ class UfficiAdapter(BasePlatformAdapter):
                     await self._stop_turn(asked_on, request_id)
             return
 
+        # 🔴 #3125: a brief Hermes queued but has not started is CANCELLED in its queue, not
+        # only stopped if running — a queued row runs later and answers whatever request is
+        # open then. Hermes's own `/stop` below cancels the route's queued rows too, except
+        # while a lost turn pauses the conversation; and whatever runs regardless, its replies
+        # are dropped (`_withdrawn`).
+        deliveries = set(self._deliveries.get(request_id, set()))
+        self._withdraw(deliveries)
+        queue = await hermes_queue.read_queue(self, self._session_key_of.get(request_id, ""))
+        if queue is not None:
+            await queue.cancel(deliveries)
         source = self.build_source(chat_id=conversation_id, chat_type=CHAT_TYPE)
         # 🔴 A turn waiting on a question ignores `/stop` (#2233): Hermes's clarify wait
         # returns only on an answer, its timeout or `clear_session`, and its gateway leaves
@@ -2065,6 +2282,7 @@ class UfficiAdapter(BasePlatformAdapter):
         self._admitting.discard(request_id)
         self._provisional.discard(request_id)
         self._deliveries.pop(request_id, None)
+        self._held_before_reset.pop(request_id, None)
         self._tools.forget(request_id)
         # A continuation into a request that is over leads nowhere (#2232): bounded by the
         # requests still open, never by the life of the process. Unless the request closed
@@ -2373,7 +2591,13 @@ def is_connected(config: PlatformConfig) -> bool:
     try:
         resolve_address(get_env)
         resolve_token(get_env)
-    except WireConfigError:
+    except WireConfigError as exc:
+        # 🔴 Said once (#3119 review): Hermes skips a platform that is not connected, and a
+        # silent False left nothing to say why. The message names variables, never a value.
+        message = str(exc)
+        if message not in _UNCONFIGURED_SAID:
+            _UNCONFIGURED_SAID.add(message)
+            logger.warning("uffici: not connecting — %s", message)
         return False
     return True
 

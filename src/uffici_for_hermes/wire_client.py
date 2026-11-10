@@ -41,8 +41,12 @@ ALLOW_REMOTE_ENV = "UFFICI_COMPANION_ALLOW_REMOTE"
 TOKEN_FILE_ENV = "UFFICI_WIRE_TOKEN_FILE"
 TOKEN_ENV = "UFFICI_WIRE_TOKEN"
 
-#: The companion's own default, which the plugin must match to find it.
-DEFAULT_URL = "http://127.0.0.1:7411"
+#: The companion's socket's name, beside its token file in ``$UFFICI_HOME`` — the
+#: companion's own default (``app.SocketFile``), which the plugin must match to find it.
+SOCKET_FILE = "wire.sock"
+
+#: The port a TCP address without one means: the companion's pod-shape default.
+DEFAULT_TCP_PORT = 7411
 
 #: Reconnect backoff. Bounded at both ends: fast enough that a companion
 #: restart is invisible to a conversation, slow enough that a companion that is
@@ -83,14 +87,29 @@ def _is_loopback(host: str) -> bool:
 def resolve_address(get_env: Callable[[str], str | None]) -> WireAddress:
     """Where the companion is.
 
-    A Unix socket wins when one is named: it is the default shape, and it is
-    the one the operating system's own permissions protect.
+    A Unix socket unless a TCP address is CONFIGURED: the one named, else ``wire.sock``
+    beside the token file, which is where the companion serves it (#3119).
+
+    🔴 Never a TCP address nobody configured. The companion never proves itself to the
+    plugin, so on a shared machine any local user who binds a loopback port first would
+    receive the wire token and could feed the harness forged rings; a socket inside
+    ``$UFFICI_HOME`` is protected by the operating system's own permissions.
     """
     socket_path = (get_env(SOCKET_ENV) or "").strip()
     if socket_path:
-        return WireAddress(kind="socket", socket_path=socket_path, url=f"ws://companion{WIRE_PATH}")
+        return _socket(socket_path)
 
-    raw = (get_env(URL_ENV) or "").strip() or DEFAULT_URL
+    raw = (get_env(URL_ENV) or "").strip()
+    if not raw:
+        token_file = (get_env(TOKEN_FILE_ENV) or "").strip()
+        if token_file:
+            return _socket(str(Path(token_file).parent / SOCKET_FILE))
+        raise WireConfigError(
+            f"no wire address: set {SOCKET_ENV} to the companion's socket (normally "
+            f"$UFFICI_HOME/{SOCKET_FILE}), or {TOKEN_FILE_ENV} to its token file and the "
+            f"socket beside it is used, or {URL_ENV} for the pod shape. The plugin never "
+            f"dials a TCP address that was not configured"
+        )
     parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https", "ws", "wss"}:
         raise WireConfigError(f"{URL_ENV} has scheme {parsed.scheme!r}; the local wire is http/ws")
@@ -104,8 +123,12 @@ def resolve_address(get_env: Callable[[str], str | None]) -> WireAddress:
             f"connection is trusted (the pod shape, where both containers share a namespace)"
         )
     scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
-    netloc = parsed.netloc or f"{parsed.hostname or '127.0.0.1'}:{parsed.port or 7411}"
+    netloc = parsed.netloc or f"{parsed.hostname or '127.0.0.1'}:{parsed.port or DEFAULT_TCP_PORT}"
     return WireAddress(kind="tcp", url=f"{scheme}://{netloc}{WIRE_PATH}")
+
+
+def _socket(path: str) -> WireAddress:
+    return WireAddress(kind="socket", socket_path=path, url=f"ws://companion{WIRE_PATH}")
 
 
 def resolve_token(get_env: Callable[[str], str | None]) -> str:

@@ -25,7 +25,11 @@
 # in_process. dev/hermes_contract.py pins each of those. Moving it is a
 # decision: the adapter reads Hermes's own BasePlatformAdapter, MessageEvent,
 # session authority and platform registry.
-FROM nousresearch/hermes-agent:v0.23.0
+#
+# 🔴 Pinned by DIGEST as well (#3118): a tag can be moved to other bytes, a
+# digest cannot. The digest is v0.23.0's multi-platform index as resolved on
+# 2026-11-10; moving the tag moves the digest in the same commit.
+FROM nousresearch/hermes-agent:v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
 
 # 🔴 The gateway is NOT this image's default command; `hermes` alone starts the
 # interactive agent. Stated here so the compose file does not have to know it.
