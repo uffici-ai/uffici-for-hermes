@@ -29,7 +29,7 @@ optional_env:
     prompt: "Companion URL"
     password: false
   - name: UFFICI_COMPANION_ALLOW_REMOTE
-    description: "Set to 1 to allow a companion that is not on loopback (the pod shape)"
+    description: "Set to 1 to allow a companion that is not on loopback (another network namespace; not needed in a pod, where 127.0.0.1 is loopback)"
     prompt: "Allow a non-loopback companion? (1 or empty)"
     password: false
   - name: UFFICI_WIRE_TOKEN_FILE

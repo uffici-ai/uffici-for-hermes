@@ -120,7 +120,8 @@ def resolve_address(get_env: Callable[[str], str | None]) -> WireAddress:
         raise WireConfigError(
             f"{URL_ENV} points at a host that is not loopback. The wire's only authentication "
             f"is a local token, so this is refused unless {ALLOW_REMOTE_ENV}=1 says the "
-            f"connection is trusted (the pod shape, where both containers share a namespace)"
+            f"connection is trusted (a companion in another network namespace; a pod's "
+            f"containers share one, where 127.0.0.1 is loopback)"
         )
     scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
     netloc = parsed.netloc or f"{parsed.hostname or '127.0.0.1'}:{parsed.port or DEFAULT_TCP_PORT}"

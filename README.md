@@ -75,7 +75,9 @@ again and replaces its key. Requirements, upgrading, uninstalling and troublesho
 the [companion's guide](https://github.com/uffici-ai/uffici-companion#install).
 
 For this plugin, `uffici setup` fetches `uffici-for-hermes.tar.gz` from the release of this
-repository your agents gateway names (else the latest), verifies it against the release's checksum list, and follows the install
+repository your agents gateway names (else the latest), verifies its signature (held to this
+repository's release workflow at the release's tag — the version it names must be the
+manifest's) and its checksum, and follows the install
 manifest it carries ([uffici-plugin.json](uffici-plugin.json)): it copies the plugin into
 Hermes's plugin directory, switches the Uffici platform on and two of Hermes's own chat
 notices off (see [Hermes's own notices](#hermess-own-notices)) with `hermes config set`, makes
@@ -138,7 +140,7 @@ In a pod, its loopback address and the token from a Secret instead. Every variab
 | --- | --- |
 | `UFFICI_WIRE_SOCKET` | The companion's Unix socket, `$UFFICI_HOME/wire.sock`. The normal shape on one machine. Unset, the plugin uses `wire.sock` beside `UFFICI_WIRE_TOKEN_FILE`, which is where the companion serves it. |
 | `UFFICI_COMPANION_URL` | The companion's loopback address instead, such as `http://127.0.0.1:7411` — the pod shape. TCP is used only when this is set: the plugin never dials a port nobody configured, because any local user who bound it first would receive the wire token. With no socket, no token file and no address, the plugin refuses to connect and says which to set. |
-| `UFFICI_COMPANION_ALLOW_REMOTE` | `1` to allow a companion that is not on loopback: a pod where both containers share a network namespace. |
+| `UFFICI_COMPANION_ALLOW_REMOTE` | `1` to allow a companion that is not on loopback: one in another network namespace, such as another container reached by its host name. Not needed in a pod, where both containers share one network namespace and `127.0.0.1` is loopback. |
 | `UFFICI_WIRE_TOKEN_FILE` | The companion's token file, `$UFFICI_HOME/wire-token`. One of this and `UFFICI_WIRE_TOKEN` is required; the plugin refuses to connect without a token. |
 | `UFFICI_WIRE_TOKEN` | The token itself, for a container that shares no filesystem with the companion. Source it from a Secret. |
 | `UFFICI_CONTEXT_SHARE` | The fraction of this Hermes's context window Uffici may fill with conversation content. Default **0.25**, less a 10 % margin for tokenizer drift. |
