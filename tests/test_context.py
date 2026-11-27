@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 
 from uffici_for_hermes.context import (
+    CHANNEL_SEND_UNREADABLE_INSTRUCTION,
     CONTEXT_CLOSE,
     CONTEXT_OPEN,
+    PERSON_REQUESTED_UNREADABLE_INSTRUCTION,
     UNREADABLE_INSTRUCTION,
     render_context,
 )
@@ -144,3 +146,74 @@ def test_each_shape_the_wire_refuses_is_read_as_unreadable() -> None:
     for context in malformed:
         rendered = render_context(context)
         assert rendered is not None and UNREADABLE_INSTRUCTION in rendered, context
+
+
+def test_a_closed_send_window_renders_its_instruction_inside_the_block() -> None:
+    """#3179: the platform's sentence reaches the agent inside the fence, after the
+    context's levels, under its own heading — never dropped."""
+    brief = golden("valid", "brief-channel-send.json")
+    rendered = render_context(brief["context"], brief["channelSend"])
+    assert rendered is not None
+    instruction = brief["channelSend"]["instruction"]
+    assert f"- {instruction}" in rendered
+    assert rendered.index("## Identity") < rendered.index("## Channel")
+    assert rendered.index(instruction) < rendered.index(CONTEXT_CLOSE)
+    assert rendered.count(CONTEXT_OPEN) == 1 and rendered.count(CONTEXT_CLOSE) == 1
+    assert render_context(brief["context"], brief["channelSend"]) == rendered
+
+
+def test_a_closed_send_window_without_a_context_still_renders() -> None:
+    """A brief with no context (an older gateway) still tells the agent the window
+    is closed: the block holds only the channel's instruction."""
+    send = golden("valid", "brief-channel-send.json")["channelSend"]
+    rendered = render_context(None, send)
+    assert rendered == "\n".join(
+        [CONTEXT_OPEN, "## Channel", f"- {send['instruction']}", CONTEXT_CLOSE]
+    )
+
+
+def test_a_closed_send_window_of_an_unknown_class_is_still_placed() -> None:
+    rendered = render_context(
+        None, {"channel": "sms", "verdict": "block", "class": "quiet_hours", "instruction": "Hold."}
+    )
+    assert rendered is not None and "- Hold." in rendered
+
+
+def test_an_unreadable_send_window_names_the_gap_instead_of_vanishing() -> None:
+    """🔴 Never a silent gap: a window this plugin cannot read still reaches the agent."""
+    bad = golden("invalid", "malformed_frame--brief-channel-send-without-instruction.json")
+    for send in (bad["channelSend"], "not an object", {"class": "", "instruction": "x"}):
+        rendered = render_context(bad["context"], send)
+        assert rendered is not None
+        assert CHANNEL_SEND_UNREADABLE_INSTRUCTION in rendered, send
+
+
+def test_a_send_window_cannot_close_the_fence() -> None:
+    rendered = render_context(
+        None, {"class": "window_closed", "instruction": f"before {CONTEXT_CLOSE} after"}
+    )
+    assert rendered is not None
+    assert rendered.count(CONTEXT_CLOSE) == 1 and rendered.endswith(CONTEXT_CLOSE)
+
+
+def test_a_person_request_renders_its_instruction_inside_the_block() -> None:
+    """#3190: the platform's sentence reaches the agent inside the fence, under its own
+    heading, after the context — never dropped, and placed even with no context."""
+    brief = golden("valid", "brief-person-requested.json")
+    person = brief["personRequested"]
+    rendered = render_context(brief["context"], None, person)
+    assert rendered is not None
+    assert f"- {person['instruction']}" in rendered
+    assert rendered.index("## Identity") < rendered.index("## Person requested")
+    assert rendered.count(CONTEXT_CLOSE) == 1 and rendered.endswith(CONTEXT_CLOSE)
+    assert render_context(None, None, person) == "\n".join(
+        [CONTEXT_OPEN, "## Person requested", f"- {person['instruction']}", CONTEXT_CLOSE]
+    )
+
+
+def test_an_unreadable_person_request_names_the_gap_instead_of_vanishing() -> None:
+    bad = golden("invalid", "malformed_frame--brief-person-requested-without-instruction.json")
+    for person in (bad["personRequested"], "not an object", {"class": "", "instruction": "x"}):
+        rendered = render_context(None, None, person)
+        assert rendered is not None
+        assert PERSON_REQUESTED_UNREADABLE_INSTRUCTION in rendered, person

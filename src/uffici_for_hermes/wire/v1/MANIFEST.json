@@ -18,7 +18,7 @@
   ],
   "validGoldensByFrame": {
     "ack": 4,
-    "brief": 7,
+    "brief": 9,
     "call": 2,
     "cancel": 4,
     "done": 4,
@@ -30,7 +30,7 @@
     "result": 3
   },
   "invalidGoldensByCloseReason": {
-    "malformed_frame": 24,
+    "malformed_frame": 26,
     "unsupported_version": 2
   },
   "invalidGoldensByCallDisposition": {
@@ -39,8 +39,8 @@
   },
   "totals": {
     "schemas": 13,
-    "valid": 41,
-    "invalid": 28
+    "valid": 43,
+    "invalid": 30
   },
   "ops": {
     "logs.push": {

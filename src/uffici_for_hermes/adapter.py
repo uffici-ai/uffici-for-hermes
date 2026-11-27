@@ -1689,8 +1689,13 @@ class UfficiAdapter(BasePlatformAdapter):
             # context prompt: the hint says what Uffici is, this says what the
             # organization and this place tell the agent, and neither replaces
             # the other. ``None`` (an older companion) leaves the hint alone,
-            # exactly as before.
-            channel_prompt=render_context(frame.get("context")),
+            # exactly as before. A closed send window (#3179) is placed in the
+            # same block: the agent learns before it answers that its reply will
+            # be held, and it changes only when the window closes or reopens. A request
+            # for a person (#3190) likewise: the agent tells them a member will take over.
+            channel_prompt=render_context(
+                frame.get("context"), frame.get("channelSend"), frame.get("personRequested")
+            ),
             # 🔴 False: this text is a transcript, and a member who types
             # "/stop" into a conversation must not be able to drive the harness.
             allow_gateway_control=False,

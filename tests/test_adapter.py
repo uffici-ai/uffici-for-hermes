@@ -451,6 +451,42 @@ def test_a_missing_context_part_reaches_the_agent_as_its_instruction() -> None:
     run(scenario())
 
 
+def test_a_closed_send_window_reaches_the_agent_system_side_before_it_answers() -> None:
+    """🔴 #3179 (decision 32): a closed WhatsApp window reaches the agent as the
+    platform's instruction, on the SYSTEM side with the context — never in the
+    transcript text and never on the user side, where it would read as something the
+    person said."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        brief = golden("brief-channel-send")
+        await adapter._on_frame(brief)
+        event = adapter.handled[0]
+        instruction = brief["channelSend"]["instruction"]
+        assert instruction in (event.channel_prompt or ""), "the window never reached the agent"
+        assert instruction not in (event.channel_context or "")
+        assert instruction not in event.text
+
+    run(scenario())
+
+
+def test_a_person_request_reaches_the_agent_system_side_before_it_answers() -> None:
+    """🔴 #3190 (decision 32): a request for a person reaches the agent as the
+    platform's instruction, on the SYSTEM side — never on the user side."""
+
+    async def scenario():
+        adapter, _ = build(FakeStore(), opener=golden("opener"))
+        brief = golden("brief-person-requested")
+        await adapter._on_frame(brief)
+        event = adapter.handled[0]
+        instruction = brief["personRequested"]["instruction"]
+        assert instruction in (event.channel_prompt or ""), "the request never reached the agent"
+        assert instruction not in (event.channel_context or "")
+        assert instruction not in event.text
+
+    run(scenario())
+
+
 def test_a_brief_without_context_leaves_the_system_side_alone() -> None:
     """An older companion sends no context: nothing is placed, and the static
     platform hint stands alone exactly as before."""

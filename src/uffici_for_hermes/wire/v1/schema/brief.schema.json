@@ -119,6 +119,75 @@
           }
         }
       }
+    },
+    "channelSend": {
+      "type": "object",
+      "required": [
+        "channel",
+        "verdict",
+        "class",
+        "instruction"
+      ],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "description": "The transport, e.g. whatsapp."
+        },
+        "verdict": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "description": "OPEN: template-only, block today."
+        },
+        "closesAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the window closed; absent for a channel with none."
+        },
+        "class": {
+          "type": "string",
+          "pattern": "^[a-z][a-z_]{0,63}$",
+          "description": "OPEN: window_closed today. A class the plugin does not know still has its instruction placed."
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The platform's sentence the agent relays to the person — placed with the context, never dropped."
+        }
+      },
+      "description": "OPTIONAL — absent whenever the channel sends and from an older companion. This conversation's channel will not send a free-form reply now (#3179); the plugin places the instruction on the SYSTEM side beside the context's missing parts, so the agent knows before it answers."
+    },
+    "personRequested": {
+      "type": "object",
+      "required": [
+        "channel",
+        "requestedAt",
+        "class",
+        "instruction"
+      ],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "description": "The transport, e.g. whatsapp."
+        },
+        "requestedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the correspondent's handoff phrase landed."
+        },
+        "class": {
+          "type": "string",
+          "pattern": "^[a-z][a-z_]{0,63}$",
+          "description": "OPEN: person_requested today. A class the plugin does not know still has its instruction placed."
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The platform's sentence the agent relays to the person — placed with the context, never dropped."
+        }
+      },
+      "description": "OPTIONAL — absent when nobody asked and from an older companion. The correspondent sent the binding's exact handoff phrase (#3190) and the organization's members were alerted; the plugin places the instruction on the SYSTEM side beside the context's missing parts."
     }
   }
 }
